@@ -1,7 +1,7 @@
 #include "CG.hpp"
 #include "utils.hpp"
 #include <AdaptiveCpp/sycl/sycl.hpp>
-#include <iomanip>
+#include <ostream>
 #include <string>
 
 using namespace acpp::sycl;
@@ -11,13 +11,17 @@ using DataType = double;
 
 int main(int argc, char *argv[]) {
 
-  std::string testfile = argv[1];
+  if(argc != 2) {
+    std::cout << "Usage: " << argv[0] << " [filename]"<< std::endl;
+    std::cout << "Returns Matrixdimensions\tTime in ms\tRelative error" << std::endl;
+    return 1;
+  }
 
+  std::string testfile = argv[1];
 
   auto [data, cols, rows] = read_file(testfile);
 
   std::vector<DataType> target(rows.size() - 1);
-
 
   for (int i = 0; i < target.size(); i++)
     target[i] = i + 1;
@@ -28,7 +32,6 @@ int main(int argc, char *argv[]) {
 
   cg.setMatrix(data, cols, rows);
 
-
   cg.setTarget(target);
 
   Timer t;
@@ -36,7 +39,6 @@ int main(int argc, char *argv[]) {
   cg.solve(1e-23);
   t.stop_measure();
   auto elapsed = t.get_duration();
-
 
   auto result = cg.extract();
 

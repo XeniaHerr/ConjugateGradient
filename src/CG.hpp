@@ -1,23 +1,14 @@
 #ifndef CG_HPP
 #define CG_HPP
 
-#include "AdaptiveCpp/hipSYCL/sycl/access.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/handler.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/interop_handle.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/libkernel/accessor.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/libkernel/nd_item.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/libkernel/nd_range.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/libkernel/reduction.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/queue.hpp"
-#include "AdaptiveCpp/hipSYCL/sycl/usm.hpp"
-#include "Matrix.hpp"
+// IMPORTANT: Only include sycl.hpp header. All other headers might lead to
+// compilation errors
 #include <AdaptiveCpp/sycl/sycl.hpp>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -28,6 +19,9 @@ namespace asycl = acpp::sycl;
 
 constexpr static size_t TILE = 128;
 
+/**
+ * @deprecated In don't know if this is a good idea. Using this tree like
+ * parallel reduction massivley increces the error.*/
 template <class DT>
 asycl::event dot_product(asycl::queue q, DT *a, DT *b, DT *result, size_t N) {
 
@@ -81,8 +75,7 @@ asycl::event dot_product(asycl::queue q, DT *a, DT *b, DT *result, size_t N) {
     chg.AdaptiveCpp_enqueue_custom_operation(
         [=](asycl::interop_handle &h) { asycl::free(group_results, q); });
   });
-  return second; // maybe return second directly? as third is not needed and
-                 // will called at the end in wait
+  return second;
 }
 
 template <typename DT> struct Matrix {
@@ -95,16 +88,16 @@ template <typename DT> struct Matrix {
   int N;
 };
 
-template <typename DT, enum Debug debuglevel = Debug::None> class CG {
+template <typename DT> class CG {
 
 public:
-  // Initalize everything at the beginning
+  // Do not allocate Memory at the beginning
   CG(asycl::queue &queue) : _queue(queue) {
     b = nullptr;
     x = nullptr;
-    p = nullptr;
-    r = nullptr;
-    rnext = nullptr;
+    A.columns = nullptr;
+    A.rows = nullptr;
+    A.data = nullptr;
   }
 
   void setMatrix(std::vector<DT> &_data, std::vector<int> &columns,
@@ -115,18 +108,18 @@ public:
 
     auto m = std::max_element(columns.begin(), columns.end());
 
-    this->A.NNZ = NNZ; // Count of
+    this->A.NNZ = NNZ;
     this->A.N = N;
     this->N = A.N;
 
     this->A.data = asycl::malloc_device<DT>(NNZ, this->_queue);
     this->A.columns = asycl::malloc_device<int>(NNZ, this->_queue);
 
-    this->A.rows = asycl::malloc_device<int>(_rows.size(), this->_queue); // N+1
+    this->A.rows = asycl::malloc_device<int>(_rows.size(), this->_queue);
 
     this->_queue.copy(_data.data(), this->A.data, NNZ);
     this->_queue.copy(columns.data(), this->A.columns, NNZ);
-    this->_queue.copy(_rows.data(), this->A.rows, _rows.size());
+    this->_queue.copy(_rows.data(), this->A.rows, N + 1);
     _queue.wait();
   }
 
@@ -159,26 +152,35 @@ public:
       throw std::runtime_error("No right hand side to solve for");
     }
 
-    r = asycl::malloc_device<DT>(A.N, _queue);
-    rnext = asycl::malloc_device<DT>(A.N, _queue);
-    p = asycl::malloc_device<DT>(A.N, _queue);
+    if (this->A.columns == nullptr) {
+      throw std::runtime_error("No Matrix given");
+    }
 
     // Helper buffers
     DT *helper = asycl::malloc_device<DT>(A.N, _queue);
+    DT *r = asycl::malloc_device<DT>(A.N, _queue);
+    DT *rnext = asycl::malloc_device<DT>(A.N, _queue);
+    DT *p = asycl::malloc_device<DT>(A.N, _queue);
     DT *rxr = asycl::malloc_device<DT>(1, _queue);
     DT *value2 = asycl::malloc_device<DT>(1, _queue);
     DT *value3 = asycl::malloc_device<DT>(1, _queue);
     DT *alpha = asycl::malloc_device<DT>(1, _queue);
     DT *beta = asycl::malloc_device<DT>(1, _queue);
 
-    if (this->x == nullptr)
+    // Must be available to both host and device
+    bool *is_done = asycl::malloc_shared<bool>(1, _queue);
+
+    if (this->x == nullptr) {
       this->x = asycl::malloc_device<DT>(A.N, this->_queue);
+    }
+    _queue.fill(x, static_cast<DT>(0), A.N);
+
     _queue.fill(r, static_cast<DT>(0), A.N);
     _queue.fill(rnext, static_cast<DT>(0), A.N);
     _queue.fill(p, static_cast<DT>(0), A.N);
-    _queue.fill(x, static_cast<DT>(0), A.N);
+    *is_done = false;
 
-    _queue.wait(); // unvommented again
+    _queue.wait();
 
     if (!r || !rnext || !p || !helper || !x) {
       throw std::runtime_error("Failed to allocate memory");
@@ -187,21 +189,18 @@ public:
     int counter = 0;
     DT res;
 
-    // COmpute r0 = b - Ax0
+    // Compute r0 = b - Ax0
     auto initializer = _queue.submit([&](asycl::handler &chg) {
       auto rows = A.rows;
       auto columns = A.columns;
       auto data = A.data;
       auto x = this->x;
-      auto r = this->r;
-      auto rnext = this->rnext;
       auto b = this->b;
-      auto p = this->p;
 
       chg.parallel_for<class MyFirstKernel>(this->A.N, [=](asycl::item<1> id) {
         DT single_result = 0;
-        for (int j = rows[id]; j < rows[id + 1]; j++) { 
-          single_result += data[j] * x[columns[j]];     
+        for (int j = rows[id]; j < rows[id + 1]; j++) {
+          single_result += data[j] * x[columns[j]];
         }
         r[id] = b[id] - single_result;
         p[id] = r[id];
@@ -211,8 +210,6 @@ public:
 
     // Precompute <r,r>
     auto erxr = _queue.submit([&](asycl::handler &chg) {
-      auto r = this->r;
-
       chg.depends_on(initializer);
       auto SumRed = asycl::reduction(rxr, asycl::plus<DT>());
       chg.parallel_for(A.N, SumRed, [=](asycl::item<1> id, auto &sum) {
@@ -221,13 +218,12 @@ public:
     });
     _queue.wait();
 
-
     do {
 
       // Make Clean enviromnet
-      auto clean_helper = _queue.fill(helper, static_cast<DT>(0), A.N);
+      auto eclean_helper = _queue.fill(helper, static_cast<DT>(0), A.N);
 
-      auto reseter = _queue.submit([&](asycl::handler &chg) {
+      auto eresetter = _queue.submit([&](asycl::handler &chg) {
         chg.single_task<class CleanUp>([=]() {
           *value2 = 0;
           *value3 = 0;
@@ -237,14 +233,13 @@ public:
       });
 
       //  p * A * p
-      auto e1 = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(clean_helper);
-        chg.depends_on(reseter);
+      auto evector_matrix_product = _queue.submit([&](asycl::handler &chg) {
+        chg.depends_on(eclean_helper);
+        chg.depends_on(eresetter);
 
         auto rows = this->A.rows;
         auto columns = this->A.columns;
         auto data = this->A.data;
-        auto p = this->p;
 
         chg.parallel_for(this->A.N, [=](asycl::item<1> id) {
           DT single_result = 0;
@@ -256,15 +251,9 @@ public:
         });
       });
 
-      // std::cout << "e1\n";
-
       // scalarproduct of AP with p
-      auto e3 = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(e1);
-
-        asycl::local_accessor<DT, 1> local_reduction(TILE, chg);
-
-        auto p = this->p;
+      auto eapxp = _queue.submit([&](asycl::handler &chg) {
+        chg.depends_on(evector_matrix_product);
 
         const auto N = this->A.N;
         auto SumRed = asycl::reduction(value2, asycl::plus<DT>());
@@ -273,13 +262,10 @@ public:
             [=](asycl::item<1> id, auto &sum) { sum += helper[id] * p[id]; });
       });
 
-      // std::cout << "e3\n";
-      //  r * r
-
-      // Alpha = value / value2
-      auto aAlpha = _queue.submit([&](asycl::handler &chg) {
+      // Alpha = rxr/ value2
+      auto ealpha = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(erxr);
-        chg.depends_on(e3);
+        chg.depends_on(eapxp);
         chg.single_task<class AlphaCalculation>(
             [=]() { *alpha = *rxr / *value2; });
       });
@@ -287,90 +273,84 @@ public:
       // Calculate x_k+1 and r_k+1
 
       auto exnext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(aAlpha);
+        chg.depends_on(ealpha);
 
-        auto p = this->p;
         auto x = this->x;
         chg.parallel_for<class XNext>(
             A.N, [=](asycl::item<1> id) { x[id] += *alpha * p[id]; });
       });
 
       // Calculate rnext
-
       auto ernext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(aAlpha);
-        chg.depends_on(e1);
+        chg.depends_on(ealpha);
+        chg.depends_on(evector_matrix_product);
 
-        auto rnext = this->rnext;
         chg.parallel_for<class RNext>(
             A.N, [=](asycl::item<1> id) { rnext[id] -= *alpha * helper[id]; });
       });
 
       // Check size of rk
-      /*
-      auto eaccuracy = _queue.submit([&](asycl::handler& chg){
-          chg.depends_on(ernext);
-
-          // Circumvent value capture restriction
-          bool* is_done = &done;
-
-          chg.single_task([=](){
-              if (asycl::sqrt(*rxr) <= error)
-                  *is_done = true;
-          });
-      });
-
-*/
-      // Comment above out for testing
-      // Calculate beta
-      // Calculate r_k+1 x r_k+1
-      auto e4 = _queue.submit([&](asycl::handler &chg) {
+      auto eaccuracy = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(ernext);
 
-        auto rnext = this->rnext;
+        chg.single_task([=]() {
+          if (asycl::sqrt(*rxr) <= error)
+            *is_done = true;
+        });
+      });
+
+      // Calculate r_k+1 x r_k+1
+      auto ernextxrnext = _queue.submit([&](asycl::handler &chg) {
+        chg.depends_on(ernext);
+
         auto SumRed = asycl::reduction(value3, asycl::plus<DT>());
         chg.parallel_for<class rk1withrk1>(A.N, SumRed,
                                            [=](asycl::item<1> id, auto &sum) {
                                              sum += rnext[id] * rnext[id];
                                            });
       });
-      // auto e4 = dot_product(this->_queue, rnext, rnext, value3, A.N);
 
-      auto aBeta = _queue.single_task<class BetaCalculation>({e4, erxr}, [=]() {
-        *beta = *value3 / *rxr;
-        *rxr = *value3;
-      });
-
+      // Calculate beta
+      auto ebeta = _queue.single_task<class BetaCalculation>(
+          {ernextxrnext, erxr}, [=]() {
+            *beta = *value3 / *rxr;
+            *rxr = *value3;
+          });
+      // Calculate pnext
       auto epnext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(aBeta);
+        chg.depends_on(ebeta);
         chg.depends_on(ernext);
-        auto p = this->p;
-        auto rnext = this->rnext;
         chg.parallel_for<class NextP>(
             A.N, [=](asycl::item<1> id) { p[id] = rnext[id] + *beta * p[id]; });
       });
 
-      auto next_step = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(aBeta);
+      auto enext_step = _queue.submit([&](asycl::handler &chg) {
+        chg.depends_on(ebeta);
         chg.copy(rnext, r, A.N);
       });
 
       _queue.wait();
 
-      // One Algorithm iteration
+      // One Algorithm iteration done
 
-    } while (counter++ < A.N && !done);
+    } while (counter++ < A.N && !(*is_done));
 
+    // Clean up helpers
     asycl::free(helper, _queue);
     asycl::free(rxr, _queue);
     asycl::free(value2, _queue);
     asycl::free(beta, _queue);
     asycl::free(alpha, _queue);
     asycl::free(value3, _queue);
+    asycl::free(r, _queue);
+    asycl::free(rnext, _queue);
+    asycl::free(p, _queue);
 
     this->is_solved = true;
   }
 
+  /**
+   * @deprecated */
   bool verify(DT tolerance = static_cast<DT>(0)) {
 
     DT *value = asycl::malloc_device<DT>(1, _queue);
@@ -385,15 +365,16 @@ public:
       auto x = this->x;
       auto b = this->b;
 
-      chg.parallel_for(A.N, SumRed, [=](asycl::item<1> id, auto &sum) {
-        DT single_result = 0;
-        for (int j = rows[id]; j < rows[id + 1]; j++) {
-          single_result += data[j] * x[columns[j]];
-        }
+      chg.parallel_for<class VerifyOperation>(
+          A.N, SumRed, [=](asycl::item<1> id, auto &sum) {
+            DT single_result = 0;
+            for (int j = rows[id]; j < rows[id + 1]; j++) {
+              single_result += data[j] * x[columns[j]];
+            }
 
-        auto a = b[id] - single_result;
-        sum += a * a;
-      });
+            auto a = b[id] - single_result;
+            sum += a * a;
+          });
     });
 
     _queue.wait();
@@ -416,10 +397,17 @@ public:
     return ret;
   }
 
+  // Calculate the relative error
   DT accuracy(DT tolerance = static_cast<DT>(0)) {
     DT *normres = asycl::malloc_device<DT>(1, _queue);
     DT *normx = asycl::malloc_device<DT>(1, _queue);
-    DT *helper = asycl::malloc_device<DT>(A.N, _queue);
+
+    _queue
+        .single_task([=]() {
+          *normres = 0;
+          *normx = 0;
+        })
+        .wait();
 
     _queue.submit([&](asycl::handler &chg) {
       auto SumRed = asycl::reduction(normres, asycl::plus<DT>());
@@ -431,33 +419,41 @@ public:
       auto x = this->x;
       auto b = this->b;
 
-      chg.parallel_for(A.N, SumRed, SumRed2,
-                       [=](asycl::item<1> id, auto &sum, auto &xsum) {
-                         DT single_result = 0;
-                         for (int j = rows[id]; j < rows[id + 1]; j++) {
-                           single_result += data[j] * x[columns[j]];
-                         }
+      chg.parallel_for<class AccuracyOperation>(
+          A.N, SumRed, SumRed2, [=](asycl::item<1> id, auto &sum, auto &xsum) {
+            DT single_result = 0;
+            for (int j = rows[id]; j < rows[id + 1]; j++) {
+              single_result += data[j] * x[columns[j]];
+            }
 
-                         auto a = b[id] - single_result;
-                         sum += a * a;
-                         xsum += x[id] * x[id];
-                       });
+            auto a = b[id] - single_result;
+            sum += a * a;
+            xsum += x[id] * x[id];
+          });
     });
 
     _queue.wait();
 
-    asycl::free(helper, _queue);
+    // return abs_error;
+    DT *host_norm_res = new DT;
+    DT *host_norm_x = new DT;
+    _queue.copy(normres, host_norm_res, 1);
+    _queue.copy(normx, host_norm_x, 1);
+    _queue.wait();
 
-    DT abs_error = std::abs(*normres / *normx);
+    DT abs_error = std::abs((*host_norm_res) / *host_norm_x);
     asycl::free(normres, _queue);
     asycl::free(normx, _queue);
+    delete host_norm_res;
+    delete host_norm_x;
 
     return abs_error;
   }
+
   void extractTo(std::vector<DT> &result) {}
 
   std::size_t memoryFootprint() const {
-    return (2 * this->A.NNZ + (6 * this->A.N))
+    return (2 * this->A.NNZ + (6 * this->A.N));
   }
 
   ~CG() {
@@ -471,12 +467,6 @@ public:
       asycl::free(x, _queue);
     if (b != nullptr)
       asycl::free(b, _queue);
-    if (r != nullptr)
-      asycl::free(r, _queue);
-    if (rnext != nullptr)
-      asycl::free(rnext, _queue);
-    if (p != nullptr)
-      asycl::free(p, _queue);
   }
 
 private:
@@ -491,12 +481,6 @@ private:
     std::cout << "]\n";
   }
 
-  asycl::event MatrixVectorMultiplikation(std::shared_ptr<DT> vector,
-                                          std::shared_ptr<DT> result);
-
-  asycl::event Vectorscaling(std::shared_ptr<DT> vector, DT scalar,
-                             std::shared_ptr<DT> result);
-
   asycl::queue _queue;
 
   bool is_solved = false;
@@ -506,9 +490,6 @@ private:
   Matrix<DT> A;
 
   DT *x;
-  DT *p;
-  DT *r;
-  DT *rnext;
 
   DT *b;
 

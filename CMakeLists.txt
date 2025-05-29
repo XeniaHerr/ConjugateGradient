@@ -10,10 +10,14 @@ else()
 endif()
 
 
-
 set(CMAKE_CXX_COMPILER "acpp")
 
-add_executable(tester src/Tester.cpp src/mm_reader.cpp)
+add_compile_options("-O2")
+include_directories(src)
+#add_subdirectory(src)
+add_subdirectory(test)
+
+
 
 
 enable_testing()

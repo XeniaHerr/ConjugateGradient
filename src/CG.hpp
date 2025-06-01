@@ -9,74 +9,18 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "VectorOperations.hpp"
 
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
 constexpr static size_t TILE = 128;
-
-/**
- * @deprecated In don't know if this is a good idea. Using this tree like
- * parallel reduction massivley increces the error.*/
-template <class DT>
-asycl::event dot_product(asycl::queue q, DT *a, DT *b, DT *result, size_t N) {
-
-  const auto workgroupsize = (N + TILE - 1) / TILE;
-
-  DT *group_results = asycl::malloc_device<DT>(workgroupsize, q);
-
-  auto init = q.fill(group_results, static_cast<DT>(0), workgroupsize);
-
-  auto first = q.submit([&](asycl::handler &chg) {
-    chg.depends_on(init);
-
-    asycl::local_accessor<DT, 1> local_results(TILE, chg);
-
-    chg.parallel_for(asycl::nd_range<1>(asycl::range<1>(workgroupsize * TILE),
-                                        asycl::range<1>(TILE)),
-                     [=](asycl::nd_item<1> item) {
-                       size_t lid = item.get_local_id(0);
-                       size_t gid = item.get_global_id(0);
-                       size_t group = item.get_group(0);
-
-                       DT val =
-                           (gid < N) ? a[gid] * b[gid] : static_cast<DT>(0);
-                       local_results[lid] = val;
-
-                       item.barrier(asycl::access::fence_space::local_space);
-
-                       for (size_t offset = TILE / 2; offset > 0; offset /= 2) {
-                         if (lid < offset)
-                           local_results[lid] += local_results[offset + lid];
-                         item.barrier(asycl::access::fence_space::local_space);
-                       }
-
-                       if (lid == 0) {
-                         group_results[group] = local_results[0];
-                       }
-                     });
-  });
-
-  auto second = q.submit([&](asycl::handler &chg) {
-    chg.depends_on(first);
-
-    auto SumRed = asycl::reduction(result, asycl::plus<DT>());
-    chg.parallel_for(workgroupsize, SumRed, [=](asycl::item<1> id, auto &sum) {
-      sum += group_results[id];
-    });
-  });
-
-  auto third = q.submit([&](asycl::handler &chg) {
-    chg.depends_on(second);
-    chg.AdaptiveCpp_enqueue_custom_operation(
-        [=](asycl::interop_handle &h) { asycl::free(group_results, q); });
-  });
-  return second;
-}
 
 template <typename DT> struct Matrix {
 
@@ -146,6 +90,9 @@ public:
 
   void solve(DT error = static_cast<DT>(0)) {
 
+    VectorOperations vecops(this->_queue);
+    vecops.setVectorSize(A.N);
+
     bool done = false;
 
     if (this->b == nullptr) {
@@ -197,25 +144,19 @@ public:
       auto x = this->x;
       auto b = this->b;
 
-      chg.parallel_for<class MyFirstKernel>(this->A.N, [=](asycl::item<1> id) {
-        DT single_result = 0;
-        for (int j = rows[id]; j < rows[id + 1]; j++) {
-          single_result += data[j] * x[columns[j]];
-        }
-        r[id] = b[id] - single_result;
-        p[id] = r[id];
-        rnext[id] = p[id];
-      });
+      chg.parallel_for<class InitializeVectors>(
+          this->A.N, [=](asycl::item<1> id) {
+            DT single_result = 0;
+            for (int j = rows[id]; j < rows[id + 1]; j++) {
+              single_result += data[j] * x[columns[j]];
+            }
+            r[id] = b[id] - single_result;
+            p[id] = r[id];
+            rnext[id] = p[id];
+          });
     });
 
-    // Precompute <r,r>
-    auto erxr = _queue.submit([&](asycl::handler &chg) {
-      chg.depends_on(initializer);
-      auto SumRed = asycl::reduction(rxr, asycl::plus<DT>());
-      chg.parallel_for(A.N, SumRed, [=](asycl::item<1> id, auto &sum) {
-        sum += r[id] * r[id];
-      });
-    });
+    auto erxr = vecops.dot_product(r, r, rxr, 0, {initializer});
     _queue.wait();
 
     do {
@@ -232,35 +173,13 @@ public:
         });
       });
 
-      //  p * A * p
-      auto evector_matrix_product = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(eclean_helper);
-        chg.depends_on(eresetter);
+      //  A * p
+      auto evector_matrix_product =
+          vecops.spmv(A.data, A.columns, A.rows, p, helper, A.NNZ, 0,
+                      {eclean_helper, eresetter});
 
-        auto rows = this->A.rows;
-        auto columns = this->A.columns;
-        auto data = this->A.data;
-
-        chg.parallel_for(this->A.N, [=](asycl::item<1> id) {
-          DT single_result = 0;
-          for (int j = rows[id]; j < rows[id + 1]; j++) {
-            single_result += (data[j] * p[columns[j]]);
-          }
-
-          helper[id] = single_result;
-        });
-      });
-
-      // scalarproduct of AP with p
-      auto eapxp = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(evector_matrix_product);
-
-        const auto N = this->A.N;
-        auto SumRed = asycl::reduction(value2, asycl::plus<DT>());
-        chg.parallel_for<class APwithp>(
-            A.N, SumRed,
-            [=](asycl::item<1> id, auto &sum) { sum += helper[id] * p[id]; });
-      });
+// scalarproduct of AP with p
+      auto eapxp = vecops.dot_product(helper, p, value2, 0, {evector_matrix_product});
 
       // Alpha = rxr/ value2
       auto ealpha = _queue.submit([&](asycl::handler &chg) {
@@ -271,23 +190,10 @@ public:
       });
 
       // Calculate x_k+1 and r_k+1
+      auto exnext = vecops.sapbx(x, p, alpha, x);
 
-      auto exnext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(ealpha);
-
-        auto x = this->x;
-        chg.parallel_for<class XNext>(
-            A.N, [=](asycl::item<1> id) { x[id] += *alpha * p[id]; });
-      });
-
-      // Calculate rnext
-      auto ernext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(ealpha);
-        chg.depends_on(evector_matrix_product);
-
-        chg.parallel_for<class RNext>(
-            A.N, [=](asycl::item<1> id) { rnext[id] -= *alpha * helper[id]; });
-      });
+      auto ernext = vecops.sambx(rnext, helper, alpha, rnext, 0,
+                                 {ealpha, evector_matrix_product});
 
       // Check size of rk
       auto eaccuracy = _queue.submit([&](asycl::handler &chg) {
@@ -299,16 +205,8 @@ public:
         });
       });
 
-      // Calculate r_k+1 x r_k+1
-      auto ernextxrnext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(ernext);
+      auto ernextxrnext = vecops.dot_product(rnext, rnext, value3, 0, {ernext});
 
-        auto SumRed = asycl::reduction(value3, asycl::plus<DT>());
-        chg.parallel_for<class rk1withrk1>(A.N, SumRed,
-                                           [=](asycl::item<1> id, auto &sum) {
-                                             sum += rnext[id] * rnext[id];
-                                           });
-      });
 
       // Calculate beta
       auto ebeta = _queue.single_task<class BetaCalculation>(
@@ -316,13 +214,7 @@ public:
             *beta = *value3 / *rxr;
             *rxr = *value3;
           });
-      // Calculate pnext
-      auto epnext = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(ebeta);
-        chg.depends_on(ernext);
-        chg.parallel_for<class NextP>(
-            A.N, [=](asycl::item<1> id) { p[id] = rnext[id] + *beta * p[id]; });
-      });
+      auto epnext = vecops.sapbx(rnext, p, beta, p, 0, {ebeta, ernext});
 
       auto enext_step = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(ebeta);
@@ -333,8 +225,13 @@ public:
 
       // One Algorithm iteration done
 
+      std::cout << "\r\033[2K";
+      std::cout << ((static_cast<double>(counter) / A.N) * 100) << "%";
+      std::flush(std::cout);
+
     } while (counter++ < A.N && !(*is_done));
 
+    std::cout << std::endl;
     // Clean up helpers
     asycl::free(helper, _queue);
     asycl::free(rxr, _queue);
@@ -349,56 +246,9 @@ public:
     this->is_solved = true;
   }
 
-  /**
-   * @deprecated */
-  bool verify(DT tolerance = static_cast<DT>(0)) {
-
-    DT *value = asycl::malloc_device<DT>(1, _queue);
-    DT *helper = asycl::malloc_device<DT>(A.N, _queue);
-
-    _queue.submit([&](asycl::handler &chg) {
-      auto SumRed = asycl::reduction(value, asycl::plus<DT>());
-
-      auto rows = this->A.rows;
-      auto columns = this->A.columns;
-      auto data = this->A.data;
-      auto x = this->x;
-      auto b = this->b;
-
-      chg.parallel_for<class VerifyOperation>(
-          A.N, SumRed, [=](asycl::item<1> id, auto &sum) {
-            DT single_result = 0;
-            for (int j = rows[id]; j < rows[id + 1]; j++) {
-              single_result += data[j] * x[columns[j]];
-            }
-
-            auto a = b[id] - single_result;
-            sum += a * a;
-          });
-    });
-
-    _queue.wait();
-
-    asycl::free(helper, _queue);
-
-    DT abs_error = *value;
-    asycl::free(value, _queue);
-
-    return abs_error <= tolerance;
-  }
-
-  void verify2(std::vector<DT> &result) {}
-
-  std::vector<DT> extract() {
-
-    std::vector<DT> ret(A.N);
-    _queue.copy(this->x, ret.data(), A.N).wait();
-
-    return ret;
-  }
 
   // Calculate the relative error
-  DT accuracy(DT tolerance = static_cast<DT>(0)) {
+  DT accuracy() {
     DT *normres = asycl::malloc_device<DT>(1, _queue);
     DT *normx = asycl::malloc_device<DT>(1, _queue);
 

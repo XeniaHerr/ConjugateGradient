@@ -12,7 +12,7 @@ endif()
 
 set(CMAKE_CXX_COMPILER "acpp")
 
-add_compile_options("-O2")
+add_compile_options("-O3")
 include_directories(src)
 #add_subdirectory(src)
 add_subdirectory(test)

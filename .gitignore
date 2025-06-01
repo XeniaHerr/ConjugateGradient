@@ -1,0 +1,3 @@
+build/*
+*.~
+*.~undo-tree~

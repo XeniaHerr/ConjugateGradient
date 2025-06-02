@@ -90,7 +90,7 @@ public:
 
   void solve(DT error = static_cast<DT>(0)) {
 
-    VectorOperations vecops(this->_queue);
+    VectorOperations<DT> vecops(this->_queue);
     vecops.setVectorSize(A.N);
 
     bool done = false;
@@ -249,6 +249,8 @@ public:
 
   // Calculate the relative error
   DT accuracy() {
+
+    std::cout << "accuracy" << std::endl;
     DT *normres = asycl::malloc_device<DT>(1, _queue);
     DT *normx = asycl::malloc_device<DT>(1, _queue);
 
@@ -298,6 +300,15 @@ public:
     delete host_norm_x;
 
     return abs_error;
+  }
+
+
+  std::vector<DT> extract() {
+
+    std::vector<DT> ret(A.N);
+
+    this->_queue.copy(this->x, ret.data(), A.N).wait();
+    return ret;
   }
 
   void extractTo(std::vector<DT> &result) {}

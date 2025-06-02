@@ -11,9 +11,10 @@ using DataType = double;
 
 int main(int argc, char *argv[]) {
 
-  if(argc != 2) {
-    std::cout << "Usage: " << argv[0] << " [filename]"<< std::endl;
-    std::cout << "Returns Matrixdimensions\tTime in ms\tRelative error" << std::endl;
+  if (argc != 2) {
+    std::cout << "Usage: " << argv[0] << " [filename]" << std::endl;
+    std::cout << "Returns Matrixdimensions\tTime in ms\tRelative error"
+              << std::endl;
     return 1;
   }
 
@@ -44,7 +45,7 @@ int main(int argc, char *argv[]) {
 
   auto dim = cg.getDimension();
 
-  auto correct = cg.accuracy(10);
+  auto correct = cg.accuracy();
   std::cout << dim << " " << elapsed.count() << " " << correct << std::endl;
 
   return 0;

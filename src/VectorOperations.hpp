@@ -32,8 +32,8 @@ public:
     const auto workgroupcount =
         (vector_size + workgroupsize - 1) / workgroupsize;
 
-    if (group_results == nullptr)
-      group_results = asycl::malloc_device<DT>(workgroupcount, _queue);
+    //if (group_results == nullptr)
+     DT * group_results = asycl::malloc_device<DT>(workgroupcount, _queue);
 
     auto filler =
         _queue.fill(group_results, static_cast<DT>(0), workgroupcount);
@@ -87,6 +87,17 @@ public:
     });
 
 
+    auto cleanup = _queue.submit([&](asycl::handler& chg){
+
+      chg.depends_on(final_reduction);
+
+      chg.AdaptiveCpp_enqueue_custom_operation([=](auto f) {
+	asycl::free(group_results, _queue);
+
+	
+      });
+    });
+
     return final_reduction;
   }
   inline asycl::event saxpby(DT *x, DT *y, DT *a, DT *b, DT *result,
@@ -108,7 +119,6 @@ public:
   /// result = x - by
   inline asycl::event sambx(DT *x, DT *y, DT *b, DT *result, size_t count = 0,
                             std::vector<asycl::event> events = {}) {
-
 
     auto event = _queue.submit([&](asycl::handler &chg) {
       chg.depends_on(events);
@@ -161,8 +171,8 @@ public:
   }
 
   ~VectorOperations() {
-    if (group_results != nullptr)
-      asycl::free(group_results, _queue);
+    //if (group_results != nullptr)
+    //asycl::free(group_results, _queue);
   }
 
 private:

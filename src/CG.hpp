@@ -190,7 +190,7 @@ public:
       });
 
       // Calculate x_k+1 and r_k+1
-      auto exnext = vecops.sapbx(x, p, alpha, x);
+      auto exnext = vecops.sapbx(x, p, alpha, x, 0, {ealpha});
 
       auto ernext = vecops.sambx(rnext, helper, alpha, rnext, 0,
                                  {ealpha, evector_matrix_product});

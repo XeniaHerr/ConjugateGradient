@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "Matrix.hpp"
 #include "VectorOperations.hpp"
 
 namespace CGSolver {
@@ -22,92 +23,107 @@ namespace asycl = acpp::sycl;
 
 constexpr static size_t TILE = 128;
 
-template <typename DT> struct Matrix {
 
-  DT *data;
-  int *columns;
-  int *rows;
+enum Debuglevel {
+  None,
+  Verbose,
 
-  int NNZ;
-  int N;
 };
 
-template <typename DT> class CG {
+template <typename DT, Debuglevel debug = Debuglevel::None> class CG {
 
 public:
   // Do not allocate Memory at the beginning
-  CG(asycl::queue &queue) : _queue(queue) {
-    b = nullptr;
-    x = nullptr;
-    A.columns = nullptr;
-    A.rows = nullptr;
-    A.data = nullptr;
+  CG(asycl::queue &queue) : _queue(queue), A(queue), x(_queue), b(_queue) {
+
+    if constexpr (debug == Debuglevel::Verbose)
+      std::cout << "Constructing CG Object\n";
+    // A.columns = nullptr;
+    // A.rows = nullptr;
+    // A.data = nullptr;
   }
 
-  void setMatrix(std::vector<DT> &_data, std::vector<int> &columns,
-                 std::vector<int> &_rows) {
+  void setMatrix(std::vector<DT> &data, std::vector<int> &columns,
+                 std::vector<int> &rows) {
+    if constexpr (debug == Debuglevel::Verbose)
+      std::cout << "Setting Matrix\n";
 
-    const int NNZ = _data.size();
-    const int N = _rows.size() - 1;
+    A.init(data, columns, rows);
 
-    auto m = std::max_element(columns.begin(), columns.end());
+    // const int NNZ = _data.size();
+    // const int N = _rows.size() - 1;
 
-    this->A.NNZ = NNZ;
-    this->A.N = N;
-    this->N = A.N;
+    // // auto m = std::max_element(columns.begin(), columns.end());
 
-    this->A.data = asycl::malloc_device<DT>(NNZ, this->_queue);
-    this->A.columns = asycl::malloc_device<int>(NNZ, this->_queue);
+    // this->A.NNZ = NNZ;
+    // this->A.N = N;
+    // this->N = A.N;
 
-    this->A.rows = asycl::malloc_device<int>(_rows.size(), this->_queue);
+    // this->A.data = asycl::malloc_device<DT>(NNZ, this->_queue);
+    // this->A.columns = asycl::malloc_device<int>(NNZ, this->_queue);
 
-    this->_queue.copy(_data.data(), this->A.data, NNZ);
-    this->_queue.copy(columns.data(), this->A.columns, NNZ);
-    this->_queue.copy(_rows.data(), this->A.rows, N + 1);
-    _queue.wait();
+    // this->A.rows = asycl::malloc_device<int>(_rows.size(), this->_queue);
+
+    // this->_queue.copy(_data.data(), this->A.data, NNZ);
+    // this->_queue.copy(columns.data(), this->A.columns, NNZ);
+    // this->_queue.copy(_rows.data(), this->A.rows, N + 1);
+    // _queue.wait();
   }
 
-  int getDimension() const { return this->A.N; }
+  int getDimension() const { return this->A.N(); }
 
   void setTarget(std::vector<DT> &_data) {
 
-    this->b = asycl::malloc_device<DT>(_data.size(), this->_queue);
+    b.init(_data);
 
-    if (this->A.N != 0)
-      assert(this->A.N == _data.size());
+    //this->b = asycl::malloc_device<DT>(_data.size(), this->_queue);
 
-    this->_queue.copy(_data.data(), this->b, _data.size());
+    // if (this->A.N() != 0)
+    //       assert(this->A.N() == _data.size());
+
+    //this->_queue.copy(_data.data(), this->b.ptr(), _data.size());
 
     _queue.wait();
   }
 
   void setInital(std::vector<DT> &_data) {
-    this->x = asycl::malloc_device<DT>(_data.size(), this->_queue);
+    // this->x = asycl::malloc_device<DT>(_data.size(), this->_queue);
 
-    this->_queue.copy(_data.data(), this->x, _data.size());
+    // this->_queue.copy(_data.data(), this->x.ptr(), _data.size());
+    x.init(_data);
     _queue.wait();
   }
 
-  void solve(DT error = static_cast<DT>(0)) {
+  void solve(DT improvement = static_cast<DT>(0)) {
+
+    if constexpr (debug == Debuglevel::Verbose)
+      std::cout << "Solving System\n";
 
     VectorOperations<DT> vecops(this->_queue);
-    vecops.setVectorSize(A.N);
+    vecops.setVectorSize(A.N());
 
     bool done = false;
 
-    if (this->b == nullptr) {
+    if (this->b.data() == nullptr) {
       throw std::runtime_error("No right hand side to solve for");
     }
 
-    if (this->A.columns == nullptr) {
+    if (this->A.columns().get() == nullptr) {
       throw std::runtime_error("No Matrix given");
     }
 
+    const auto N = A.N();
+
     // Helper buffers
-    DT *helper = asycl::malloc_device<DT>(A.N, _queue);
-    DT *r = asycl::malloc_device<DT>(A.N, _queue);
-    DT *rnext = asycl::malloc_device<DT>(A.N, _queue);
-    DT *p = asycl::malloc_device<DT>(A.N, _queue);
+    // DT *helper = asycl::malloc_device<DT>(N, _queue);
+    // DT *r = asycl::malloc_device<DT>(N, _queue);
+    // DT *rnext = asycl::malloc_device<DT>(N, _queue);
+    // DT *p = asycl::malloc_device<DT>(N, _queue);
+
+    Vector<DT> helper(_queue, N);
+    Vector<DT> r(_queue, N);
+    Vector<DT> rnext(_queue, N);
+    Vector<DT> p(_queue, N);
     DT *rxr = asycl::malloc_device<DT>(1, _queue);
     DT *value2 = asycl::malloc_device<DT>(1, _queue);
     DT *value3 = asycl::malloc_device<DT>(1, _queue);
@@ -117,52 +133,67 @@ public:
     // Must be available to both host and device
     bool *is_done = asycl::malloc_shared<bool>(1, _queue);
 
-    if (this->x == nullptr) {
-      this->x = asycl::malloc_device<DT>(A.N, this->_queue);
-    }
-    _queue.fill(x, static_cast<DT>(0), A.N);
+    x.init_empty(N);
+    r.init_empty(N);
+    rnext.init_empty(N);
+    p.init_empty(N);
+    helper.init_empty();
+    // _queue.fill(x, static_cast<DT>(0), N);
 
-    _queue.fill(r, static_cast<DT>(0), A.N);
-    _queue.fill(rnext, static_cast<DT>(0), A.N);
-    _queue.fill(p, static_cast<DT>(0), A.N);
+    // _queue.fill(r, static_cast<DT>(0), N);
+    // _queue.fill(rnext, static_cast<DT>(0), N);
+    // _queue.fill(p, static_cast<DT>(0), N);
     *is_done = false;
 
     _queue.wait();
 
-    if (!r || !rnext || !p || !helper || !x) {
-      throw std::runtime_error("Failed to allocate memory");
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::cout << "Prepared Memory" << std::endl;
     }
+
+    // if (!r || !rnext || !p || !helper || !x) {
+    //   throw std::runtime_error("Failed to allocate memory");
+    // }
 
     int counter = 0;
     DT res;
 
     // Compute r0 = b - Ax0
     auto initializer = _queue.submit([&](asycl::handler &chg) {
-      auto rows = A.rows;
-      auto columns = A.columns;
-      auto data = A.data;
-      auto x = this->x;
-      auto b = this->b;
+      int *rows = A.rows().get();
+      int *columns = A.columns().get();
+      DT *data = A.data().get();
+      auto x = this->x.ptr();
+      auto b = this->b.ptr();
+      auto _r = r.ptr();
+      auto _rnext = rnext.ptr();
+      auto _p = p.ptr();
 
-      chg.parallel_for<class InitializeVectors>(
-          this->A.N, [=](asycl::item<1> id) {
-            DT single_result = 0;
-            for (int j = rows[id]; j < rows[id + 1]; j++) {
-              single_result += data[j] * x[columns[j]];
-            }
-            r[id] = b[id] - single_result;
-            p[id] = r[id];
-            rnext[id] = p[id];
-          });
+      chg.parallel_for<class InitializeVectors>(N, [=](asycl::item<1> id) {
+        DT single_result = 0;
+        for (int j = rows[id]; j < rows[id + 1]; j++) {
+          single_result += data[j] * x[columns[j]];
+        }
+        _r[id] = b[id] - single_result;
+        _p[id] = _r[id];
+        _rnext[id] = _p[id];
+      });
     });
 
-    auto erxr = vecops.dot_product(r, r, rxr, 0, {initializer});
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::cout << "Init done" << std::endl;
+    }
+    auto erxr = vecops.dot_product_optimised(r, r, rxr, 0, {initializer});
     _queue.wait();
 
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::cout << "Entering Loop" << std::endl;
+    }
     do {
 
       // Make Clean enviromnet
-      auto eclean_helper = _queue.fill(helper, static_cast<DT>(0), A.N);
+      auto eclean_helper = _queue.fill(helper.ptr(), static_cast<DT>(0), N);
+
 
       auto eresetter = _queue.submit([&](asycl::handler &chg) {
         chg.single_task<class CleanUp>([=]() {
@@ -175,11 +206,12 @@ public:
 
       //  A * p
       auto evector_matrix_product =
-          vecops.spmv(A.data, A.columns, A.rows, p, helper, A.NNZ, 0,
+          vecops.spmv(A, p, helper, A.NNZ(), 0,
                       {eclean_helper, eresetter});
 
-// scalarproduct of AP with p
-      auto eapxp = vecops.dot_product(helper, p, value2, 0, {evector_matrix_product});
+      // scalarproduct of AP with p
+      auto eapxp = vecops.dot_product_optimised(helper, p, value2, 0,
+                                                {evector_matrix_product});
 
       // Alpha = rxr/ value2
       auto ealpha = _queue.submit([&](asycl::handler &chg) {
@@ -200,13 +232,12 @@ public:
         chg.depends_on(ernext);
 
         chg.single_task([=]() {
-          if (asycl::sqrt(*rxr) <= error)
+          if (asycl::sqrt(*rxr) <= improvement)
             *is_done = true;
         });
       });
 
-      auto ernextxrnext = vecops.dot_product(rnext, rnext, value3, 0, {ernext});
-
+      auto ernextxrnext = vecops.dot_product_optimised(rnext, rnext, value3, 0, {ernext});
 
       // Calculate beta
       auto ebeta = _queue.single_task<class BetaCalculation>(
@@ -218,39 +249,46 @@ public:
 
       auto enext_step = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(ebeta);
-        chg.copy(rnext, r, A.N);
+        chg.copy(rnext.ptr(), r.ptr(), N);
       });
 
       _queue.wait();
 
       // One Algorithm iteration done
 
-      std::cout << "\r\033[2K";
-      std::cout << ((static_cast<double>(counter) / A.N) * 100) << "%";
-      std::flush(std::cout);
+      if constexpr (debug == Debuglevel::Verbose) {
+        if (counter % 100 == 0) {
+          std::cout << "\r\033[2K";
+          std::cout << ((static_cast<double>(counter) / A.N()) * 100) << "%";
+          std::flush(std::cout);
+        }
+      }
 
-    } while (counter++ < A.N && !(*is_done));
+    } while (counter++ < N && !(*is_done));
+    DT val;
+    this->_queue.copy(rxr, &val, 1);
+
+    this->_queue.wait();
+
+    if constexpr (debug == Debuglevel::Verbose)
+	std::cout << "Last rxr = " << val << std::endl;
 
     std::cout << std::endl;
     // Clean up helpers
-    asycl::free(helper, _queue);
     asycl::free(rxr, _queue);
     asycl::free(value2, _queue);
     asycl::free(beta, _queue);
     asycl::free(alpha, _queue);
     asycl::free(value3, _queue);
-    asycl::free(r, _queue);
-    asycl::free(rnext, _queue);
-    asycl::free(p, _queue);
 
     this->is_solved = true;
   }
 
-
   // Calculate the relative error
   DT accuracy() {
 
-    std::cout << "accuracy" << std::endl;
+    if constexpr (debug == Debuglevel::Verbose)
+	std::cout << "accuracy" << std::endl;
     DT *normres = asycl::malloc_device<DT>(1, _queue);
     DT *normx = asycl::malloc_device<DT>(1, _queue);
 
@@ -265,14 +303,14 @@ public:
       auto SumRed = asycl::reduction(normres, asycl::plus<DT>());
       auto SumRed2 = asycl::reduction(normx, asycl::plus<DT>());
 
-      auto rows = this->A.rows;
-      auto columns = this->A.columns;
-      auto data = this->A.data;
-      auto x = this->x;
-      auto b = this->b;
+      auto rows = this->A.rows().get();
+      auto columns = this->A.columns().get();
+      auto data = this->A.data().get();
+      auto x = this->x.ptr();
+      auto b = this->b.ptr();
 
       chg.parallel_for<class AccuracyOperation>(
-          A.N, SumRed, SumRed2, [=](asycl::item<1> id, auto &sum, auto &xsum) {
+          A.N(), SumRed, SumRed2, [=](asycl::item<1> id, auto &sum, auto &xsum) {
             DT single_result = 0;
             for (int j = rows[id]; j < rows[id + 1]; j++) {
               single_result += data[j] * x[columns[j]];
@@ -283,6 +321,7 @@ public:
             xsum += x[id] * x[id];
           });
     });
+
 
     _queue.wait();
 
@@ -302,39 +341,26 @@ public:
     return abs_error;
   }
 
-
   std::vector<DT> extract() {
 
-    std::vector<DT> ret(A.N);
+    std::vector<DT> ret(A.N());
 
-    this->_queue.copy(this->x, ret.data(), A.N).wait();
+    this->_queue.copy(this->x.ptr(), ret.data(), A.N()).wait();
     return ret;
   }
 
   void extractTo(std::vector<DT> &result) {}
 
   std::size_t memoryFootprint() const {
-    return (2 * this->A.NNZ + (6 * this->A.N));
+    return (2 * this->A.NNZ() + (6 * this->A.N()));
   }
 
-  ~CG() {
-    if (A.data != nullptr)
-      asycl::free(A.data, _queue);
-    if (A.columns != nullptr)
-      asycl::free(A.columns, _queue);
-    if (A.data != nullptr)
-      asycl::free(A.rows, _queue);
-    if (x != nullptr)
-      asycl::free(x, _queue);
-    if (b != nullptr)
-      asycl::free(b, _queue);
-  }
 
 private:
   void printVector(DT *data, std::string name) {
 
-    std::vector<DT> vec(A.N);
-    _queue.copy(data, vec.data(), A.N).wait();
+    std::vector<DT> vec(A.N());
+    _queue.copy(data, vec.data(), A.N()).wait();
 
     std::cout << name << " = [";
     for (auto &a : vec)
@@ -350,9 +376,9 @@ private:
 
   Matrix<DT> A;
 
-  DT *x;
+  Vector<DT> x;
 
-  DT *b;
+  Vector<DT> b;
 
   size_t N;
 };

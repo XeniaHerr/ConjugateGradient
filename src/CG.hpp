@@ -23,7 +23,6 @@ namespace asycl = acpp::sycl;
 
 constexpr static size_t TILE = 128;
 
-
 enum Debuglevel {
   None,
   Verbose,
@@ -49,25 +48,6 @@ public:
       std::cout << "Setting Matrix\n";
 
     A.init(data, columns, rows);
-
-    // const int NNZ = _data.size();
-    // const int N = _rows.size() - 1;
-
-    // // auto m = std::max_element(columns.begin(), columns.end());
-
-    // this->A.NNZ = NNZ;
-    // this->A.N = N;
-    // this->N = A.N;
-
-    // this->A.data = asycl::malloc_device<DT>(NNZ, this->_queue);
-    // this->A.columns = asycl::malloc_device<int>(NNZ, this->_queue);
-
-    // this->A.rows = asycl::malloc_device<int>(_rows.size(), this->_queue);
-
-    // this->_queue.copy(_data.data(), this->A.data, NNZ);
-    // this->_queue.copy(columns.data(), this->A.columns, NNZ);
-    // this->_queue.copy(_rows.data(), this->A.rows, N + 1);
-    // _queue.wait();
   }
 
   int getDimension() const { return this->A.N(); }
@@ -76,20 +56,10 @@ public:
 
     b.init(_data);
 
-    //this->b = asycl::malloc_device<DT>(_data.size(), this->_queue);
-
-    // if (this->A.N() != 0)
-    //       assert(this->A.N() == _data.size());
-
-    //this->_queue.copy(_data.data(), this->b.ptr(), _data.size());
-
     _queue.wait();
   }
 
   void setInital(std::vector<DT> &_data) {
-    // this->x = asycl::malloc_device<DT>(_data.size(), this->_queue);
-
-    // this->_queue.copy(_data.data(), this->x.ptr(), _data.size());
     x.init(_data);
     _queue.wait();
   }
@@ -114,21 +84,15 @@ public:
 
     const auto N = A.N();
 
-    // Helper buffers
-    // DT *helper = asycl::malloc_device<DT>(N, _queue);
-    // DT *r = asycl::malloc_device<DT>(N, _queue);
-    // DT *rnext = asycl::malloc_device<DT>(N, _queue);
-    // DT *p = asycl::malloc_device<DT>(N, _queue);
-
     Vector<DT> helper(_queue, N);
     Vector<DT> r(_queue, N);
     Vector<DT> rnext(_queue, N);
     Vector<DT> p(_queue, N);
-    DT *rxr = asycl::malloc_device<DT>(1, _queue);
-    DT *value2 = asycl::malloc_device<DT>(1, _queue);
-    DT *value3 = asycl::malloc_device<DT>(1, _queue);
-    DT *alpha = asycl::malloc_device<DT>(1, _queue);
-    DT *beta = asycl::malloc_device<DT>(1, _queue);
+    Scalar<DT> rxr(_queue);
+    Scalar<DT> value2(_queue);
+    Scalar<DT> value3(_queue);
+    Scalar<DT> alpha(_queue);
+    Scalar<DT> beta(_queue);
 
     // Must be available to both host and device
     bool *is_done = asycl::malloc_shared<bool>(1, _queue);
@@ -138,11 +102,6 @@ public:
     rnext.init_empty(N);
     p.init_empty(N);
     helper.init_empty();
-    // _queue.fill(x, static_cast<DT>(0), N);
-
-    // _queue.fill(r, static_cast<DT>(0), N);
-    // _queue.fill(rnext, static_cast<DT>(0), N);
-    // _queue.fill(p, static_cast<DT>(0), N);
     *is_done = false;
 
     _queue.wait();
@@ -150,10 +109,6 @@ public:
     if constexpr (debug == Debuglevel::Verbose) {
       std::cout << "Prepared Memory" << std::endl;
     }
-
-    // if (!r || !rnext || !p || !helper || !x) {
-    //   throw std::runtime_error("Failed to allocate memory");
-    // }
 
     int counter = 0;
     DT res;
@@ -194,7 +149,6 @@ public:
       // Make Clean enviromnet
       auto eclean_helper = _queue.fill(helper.ptr(), static_cast<DT>(0), N);
 
-
       auto eresetter = _queue.submit([&](asycl::handler &chg) {
         chg.single_task<class CleanUp>([=]() {
           *value2 = 0;
@@ -206,8 +160,7 @@ public:
 
       //  A * p
       auto evector_matrix_product =
-          vecops.spmv(A, p, helper, A.NNZ(), 0,
-                      {eclean_helper, eresetter});
+          vecops.spmv(A, p, helper, A.NNZ(), 0, {eclean_helper, eresetter});
 
       // scalarproduct of AP with p
       auto eapxp = vecops.dot_product_optimised(helper, p, value2, 0,
@@ -237,7 +190,8 @@ public:
         });
       });
 
-      auto ernextxrnext = vecops.dot_product_optimised(rnext, rnext, value3, 0, {ernext});
+      auto ernextxrnext =
+          vecops.dot_product_optimised(rnext, rnext, value3, 0, {ernext});
 
       // Calculate beta
       auto ebeta = _queue.single_task<class BetaCalculation>(
@@ -266,20 +220,12 @@ public:
 
     } while (counter++ < N && !(*is_done));
     DT val;
-    this->_queue.copy(rxr, &val, 1);
+    this->_queue.copy(rxr.ptr(), &val, 1);
 
     this->_queue.wait();
 
     if constexpr (debug == Debuglevel::Verbose)
-	std::cout << "Last rxr = " << val << std::endl;
-
-    std::cout << std::endl;
-    // Clean up helpers
-    asycl::free(rxr, _queue);
-    asycl::free(value2, _queue);
-    asycl::free(beta, _queue);
-    asycl::free(alpha, _queue);
-    asycl::free(value3, _queue);
+      std::cout << "Last rxr = " << val << std::endl;
 
     this->is_solved = true;
   }
@@ -288,9 +234,9 @@ public:
   DT accuracy() {
 
     if constexpr (debug == Debuglevel::Verbose)
-	std::cout << "accuracy" << std::endl;
-    DT *normres = asycl::malloc_device<DT>(1, _queue);
-    DT *normx = asycl::malloc_device<DT>(1, _queue);
+      std::cout << "accuracy" << std::endl;
+    Scalar<DT> normres(_queue);
+    Scalar<DT> normx(_queue);
 
     _queue
         .single_task([=]() {
@@ -300,8 +246,8 @@ public:
         .wait();
 
     _queue.submit([&](asycl::handler &chg) {
-      auto SumRed = asycl::reduction(normres, asycl::plus<DT>());
-      auto SumRed2 = asycl::reduction(normx, asycl::plus<DT>());
+      auto SumRed = asycl::reduction(normres.ptr(), asycl::plus<DT>());
+      auto SumRed2 = asycl::reduction(normx.ptr(), asycl::plus<DT>());
 
       auto rows = this->A.rows().get();
       auto columns = this->A.columns().get();
@@ -310,7 +256,8 @@ public:
       auto b = this->b.ptr();
 
       chg.parallel_for<class AccuracyOperation>(
-          A.N(), SumRed, SumRed2, [=](asycl::item<1> id, auto &sum, auto &xsum) {
+          A.N(), SumRed, SumRed2,
+          [=](asycl::item<1> id, auto &sum, auto &xsum) {
             DT single_result = 0;
             for (int j = rows[id]; j < rows[id + 1]; j++) {
               single_result += data[j] * x[columns[j]];
@@ -322,19 +269,16 @@ public:
           });
     });
 
-
     _queue.wait();
 
     // return abs_error;
     DT *host_norm_res = new DT;
     DT *host_norm_x = new DT;
-    _queue.copy(normres, host_norm_res, 1);
-    _queue.copy(normx, host_norm_x, 1);
+    _queue.copy(normres.ptr(), host_norm_res, 1);
+    _queue.copy(normx.ptr(), host_norm_x, 1);
     _queue.wait();
 
     DT abs_error = std::abs((*host_norm_res) / *host_norm_x);
-    asycl::free(normres, _queue);
-    asycl::free(normx, _queue);
     delete host_norm_res;
     delete host_norm_x;
 
@@ -354,7 +298,6 @@ public:
   std::size_t memoryFootprint() const {
     return (2 * this->A.NNZ() + (6 * this->A.N()));
   }
-
 
 private:
   void printVector(DT *data, std::string name) {

@@ -126,6 +126,42 @@ private:
   std::shared_ptr<DT[]> _ptr;
 };
 
+template <class DT> class Scalar {
+
+public:
+  Scalar(asycl::queue q, DT value = static_cast<DT>(0)) : _q(q) {
+
+    init(value);
+
+    _q.wait();
+  }
+
+  auto init(DT value) {
+
+    this->value = std::shared_ptr<DT>(asycl::malloc_device<DT>(1, _q), Asycl_deleter<DT>(_q));
+
+    _q.copy(&value, this->value.get(), 1);
+  }
+
+  auto ptr() { return value.get(); }
+
+  operator DT*() const { // Maybe make this constexpr
+
+    return value.get();
+  }
+
+  // DT* operator *() {
+
+  //   return value.get();
+
+  // }
+
+private:
+  asycl::queue _q;
+
+  std::shared_ptr<DT> value;
+};
+
 } // namespace CGSolver
 
 #endif /*MATRIX_HPP*/

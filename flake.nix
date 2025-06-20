@@ -1,40 +1,22 @@
 {
-  description = "Development Environment for my Beginner Practical";
+  description = "Beginner Practical";
 
+  inputs.flake-utils.url = "github:numtide/flake-utils";
 
-  inputs = {
-
-
-    nixpkgs.url = "github:NixOS/nixpkgs";
-
-    flake-utils.url = "github:numtide/flake-utils";
-  };
-
-  outputs = inputs @ {self,...}: 
-
-    inputs.flake-utils.lib.eachDefaultSystem( system:
-  let
-  pkgs = import inputs.nixpkgs { system = "${system}"; config.allowUnfree = true; };
-      in
-        {
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let 
+      pkgs = import nixpkgs { system = "${system}"; config.allowUnfree = true; }; in
+      {
         devShells.default = pkgs.mkShell {
-          /*
-            (python312.withPackages ( ps: with python312Packages; with ps; [
-              matplotlib
-              python312Packages.pandas
-            ]))
-*/
-  buildInputs = with pkgs; [
-            adaptivecppWithCuda
-              patchelf
-              file
-              cmake
-              python312Packages.matplotlib
-              python312Packages.pandas
-            python312
-  ];
+
+    buildInputs = with pkgs; [
+      adaptivecppWithCuda
+      cmake
+    ];
         };
+
+
       }
     );
-
-  }
+}

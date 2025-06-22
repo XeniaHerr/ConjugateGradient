@@ -1,28 +1,41 @@
 #ifndef VECTOROPERATIONS_HPP
 #define VECTOROPERATIONS_HPP
 
+/**
+ * @file VectorOperations.hpp
+ *
+ * This file contains the VectorOperations class, which Provides the Kernels for
+ * the needed Linear Algebra Operations
+ */
+
+#include "LinearAlgebraTypes.hpp"
 #include <AdaptiveCpp/hipSYCL/sycl/usm.hpp>
+#include <AdaptiveCpp/sycl/sycl.hpp>
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-
-#include <AdaptiveCpp/sycl/sycl.hpp>
 #include <iostream>
-#include <vector>
-#include "Matrix.hpp"
 #include <memory>
+#include <vector>
 
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
 /**
- * when count == 0, we assume that the vector_size has been set beforehand*/
+ * @class VectorOperations
+ *
+ * @brief Collection of Kernels for Linear Algebra Opearations.
+ *
+ * All methods that implement Kernels return a sycl event. This event can be
+ * used in Future Kernels to create a Dependencie Hierarchy. This class doesn't
+ * call queue.wait() on its own.*/
 template <class DT> class VectorOperations {
 
 private:
-  // vector_size == to_reduce_size, workgroupcount == to_reduce_to
-  asycl::event reduction_step(DT *to_reduce, DT *to_reduce_to,
+  /**
+   * @brief Internal method for a single Reduction step*/
+  asycl::event reduction_step(DT *to_reduce, std::size_t begin_buffer,
                               size_t to_reduce_size, size_t to_reduce_to_size,
                               std::vector<asycl::event> events = {}) {
 
@@ -30,7 +43,7 @@ private:
       chg.depends_on(events);
 
       asycl::local_accessor<DT, 1> local_results(workgroupsize, chg);
-      chg.parallel_for<class FirstRoundReduction>(
+      chg.parallel_for<class ReductionStep>(
           asycl::nd_range<1>(asycl::range<1>(to_reduce_to_size * workgroupsize),
                              asycl::range<1>(workgroupsize)),
           [=](asycl::nd_item<1> item) {
@@ -38,10 +51,12 @@ private:
             auto global_id = item.get_global_id(0);
             auto group = item.get_group(0);
 
-            DT val = (global_id < to_reduce_size) ? to_reduce[global_id] : 0;
+            DT val = (global_id < to_reduce_size)
+                         ? to_reduce[begin_buffer + global_id]
+                         : 0;
 
-            if (global_id < to_reduce_size) {
-              val = to_reduce[global_id];
+            if ((global_id + begin_buffer) < to_reduce_size) {
+              val = to_reduce[global_id + begin_buffer];
             } else {
               val = static_cast<DT>(0);
             }
@@ -56,7 +71,8 @@ private:
             }
 
             if (local_id == 0) {
-              to_reduce_to[group] = local_results[0];
+              to_reduce[group + begin_buffer + to_reduce_size] =
+                  local_results[0];
             }
           });
     });
@@ -69,11 +85,25 @@ public:
     workgroupsize = calculateWorkgroupSize();
     group_results = nullptr;
   }
+
+  /**
+   * @brief Set the Lenght of the used Vectors once*/
   void setVectorSize(size_t size) { this->vector_size = size; }
 
+  /**
+   * @brief Calculate the Standart Scalarproduct of 2 Vectors using Parallel
+   * Tree Reductions.
+   *
+   * @param Left Left Vector
+   * @param Right Right Vector
+   * @param result Pointer to store the Resulting Scalar.
+   * @param dependencies std::vector of asycl::events that should be performed
+   * before this kernel
+   * @param Vectorsize optional size of the vector*/
   asycl::event
-  dot_product_optimised(Vector<DT> &Left, Vector<DT> &Right, DT *result, size_t count = 0,
-                        std::vector<asycl::event> dependencies = {}) {
+  dot_product_optimised(Vector<DT> &Left, Vector<DT> &Right, DT *result,
+                        std::vector<asycl::event> dependencies = {},
+                        size_t count = 0) {
 
     vector_size = count == 0 ? vector_size : count;
 
@@ -82,7 +112,7 @@ public:
     auto workgroupcount = (vector_size + workgroupsize - 1) / workgroupsize;
 
     // if (group_results == nullptr)
-    DT *group_results = asycl::malloc_device<DT>(workgroupcount, _queue);
+    DT *group_results = asycl::malloc_device<DT>(workgroupcount * 2, _queue);
 
     auto filler =
         _queue.fill(group_results, static_cast<DT>(0), workgroupcount);
@@ -130,23 +160,25 @@ public:
     // Initial reduction step done
 
     asycl::event step_event = filler;
+    auto buffer_offset = workgroupcount;
 
     while (workgroupcount >= workgroupsize * workgroupsize) {
 
       const auto next_workgroupcount =
           (workgroupcount + workgroupsize - 1) / workgroupsize;
 
-      DT *step_buffer =
-          asycl::malloc_device<DT>(next_workgroupcount, this->_queue);
+      // DT *step_buffer =
+      //     asycl::malloc_device<DT>(next_workgroupcount, this->_queue);
 
       step_event =
-          this->reduction_step(group_results, step_buffer, workgroupcount,
+          this->reduction_step(group_results, buffer_offset, workgroupcount,
                                next_workgroupcount, {step_event});
-      asycl::free(group_results, this->_queue);
-      group_results = step_buffer;
-      asycl::free(step_buffer, this->_queue);
+      // asycl::free(group_results, this->_queue);
+      // group_results = step_buffer;
+      // asycl::free(step_buffer, this->_queue);
 
       workgroupcount = next_workgroupcount;
+      buffer_offset += workgroupcount;
     }
     auto final_reduction = _queue.submit([&](asycl::handler &chg) {
       chg.depends_on(event);
@@ -168,11 +200,13 @@ public:
     return final_reduction;
   }
 
-  //  template <class DT>
-  asycl::event dot_product(DT *left, DT *right, DT *result, size_t count = 0,
-                           std::vector<asycl::event> dependencies = {}) {
+  /**
+   @deprecated Use the optimised version*/
+  asycl::event dot_product(DT *left, DT *right, DT *result,
+                           std::vector<asycl::event> dependencies = {},
+                           size_t vec_size = 0) {
 
-    vector_size = count == 0 ? vector_size : count;
+    vector_size = vec_size == 0 ? vector_size : vec_size;
 
     assert(vector_size != 0);
 
@@ -242,15 +276,31 @@ public:
 
     return final_reduction;
   }
-  inline asycl::event saxpby(Vector<DT> &X, Vector<DT> &Y, DT *a, DT* b, Vector<DT> &Result,
-                             size_t count = 0,
-                             std::vector<asycl::event> events = {}) {
 
+
+
+  /**
+   * @brief Add two scaled Vectors
+   *
+   * @param X Vector
+   * @param Y Vector
+   * @param a scalar for X
+   * @param b scalar for Y
+   * @param Result resulting vector
+   * @param events dependencies
+   * @param count Vectorsize
+   */
+  inline asycl::event saxpby(Vector<DT> &X, Vector<DT> &Y, DT *a, DT *b,
+                             Vector<DT> &Result,
+                             std::vector<asycl::event> events = {},
+                             size_t vec_size = 0) {
+
+    vector_size = vec_size == 0 ? vector_size : vec_size;
     auto event = _queue.submit([&](asycl::handler &chg) {
       auto x = X.ptr();
       auto y = Y.ptr();
       auto result = Result.ptr();
-        chg.depends_on(events);
+      chg.depends_on(events);
 
       chg.parallel_for<class saxpbyKernel>(vector_size, [=](asycl::item<1> id) {
         result[id] = *a * x[id] + *b * y[id];
@@ -261,8 +311,20 @@ public:
   }
 
   /// result = x - by
-  inline asycl::event sambx(Vector<DT> &X, Vector<DT> &Y, DT *b, Vector<DT>& Result, size_t count = 0,
-                            std::vector<asycl::event> events = {}) {
+  /**
+   * @brief Subtract a scaled vector from another vector
+   *
+   * @param X Vector to subtract from
+   * @param Y Vector to be subtracted
+   * @param b scalar for Y
+   * @param Result resulting vector
+   * @param events dependencies
+   * @param count Vectorsize
+   */
+  inline asycl::event sambx(Vector<DT> &X, Vector<DT> &Y, DT *b,
+                            Vector<DT> &Result,
+                            std::vector<asycl::event> events = {},
+                            size_t count = 0) {
 
     auto event = _queue.submit([&](asycl::handler &chg) {
       chg.depends_on(events);
@@ -279,8 +341,20 @@ public:
   }
 
   /// result = x + by
-  inline asycl::event sapbx(Vector<DT> &X, Vector<DT> &Y, DT *b, Vector<DT> &Result, size_t count = 0,
-                            std::vector<asycl::event> events = {}) {
+  /**
+   * @brief Add a scaled vector to another vector
+   *
+   * @param X Vector 
+   * @param Y Vector 
+   * @param b scalar for Y
+   * @param Result resulting vector
+   * @param events dependencies
+   * @param count Vectorsize
+   */
+  inline asycl::event sapbx(Vector<DT> &X, Vector<DT> &Y, DT *b,
+                            Vector<DT> &Result,
+                            std::vector<asycl::event> events = {},
+                            size_t count = 0) {
 
     auto event = _queue.submit([&](asycl::handler &chg) {
       chg.depends_on(events);
@@ -297,13 +371,21 @@ public:
     return event;
   }
 
-  inline asycl::event spmv(Matrix<DT>& A, Vector<DT>& vec, Vector<DT> &Result,
-                    size_t NNZ, size_t count = 0,
-                    std::vector<asycl::event> events = {}) {
+  /**
+   * @brief Sparse Matrix Vector Multiplikation
+   *
+   * @param A Matrix
+   * @param vec Vector
+   * @param Result Result Vector
+   * @param events dependencies
+   * @param vec_size Size of Vectors*/
+  inline asycl::event spmv(Matrix<DT> &A, Vector<DT> &vec, Vector<DT> &Result,
+                           size_t NNZ, std::vector<asycl::event> events = {},
+                           size_t count = 0) {
 
     vector_size = count == 0 ? vector_size : count;
 
-    assert(vector_size != 0);
+    assert(vector_size != 0 && A.N() == vector_size);
 
     auto evector_matrix_product = _queue.submit([&](asycl::handler &chg) {
       chg.depends_on(events);

@@ -22,6 +22,13 @@ include_directories(src)
 add_subdirectory(test)
 
 
+find_package(Doxygen OPTIONAL_COMPONENTS mscgen dia dot)
+
+
+if(DOXYGEN_FOUND)
+  doxygen_add_docs(doc src)
+endif()
+
 
 
 enable_testing()

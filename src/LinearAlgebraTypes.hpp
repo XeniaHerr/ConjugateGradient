@@ -36,6 +36,39 @@ public:
     _queue.wait(); // TODO: Handle exceptions
   }
 
+  // Matrix(Matrix &&other)
+  //     : _queue(other._queue), _N(other._N), _NNZ(other._NNZ),
+  //       _size(other._size), _data(other._data), _columns(other._columns),
+  //       _rows(other._rows) {
+
+  //   other._data = nullptr;
+  //   other._columns = nullptr;
+  //   other._rows = nullptr;
+  //   other._N = 0;
+  //   other._NNZ = 0;
+  //   other._size= 0;
+  // }
+
+  // Matrix &operator=(Matrix &&other) {
+
+  //   this->_data = other._data;
+  //   this->_columns = other._columns;
+  //   this->_rows = other._rows;
+  //   this->_queue = other._queue;
+  //   this->_N = other._N;
+  //   this->_NNZ = other._NNZ;
+  //   this->_size = other._size;
+
+  //   other._data = nullptr;
+  //   other._columns = nullptr;
+  //   other._rows = nullptr;
+  //   other._N = 0;
+  //   other._NNZ = 0;
+  //   other._size = 0;
+
+  //   return *this;
+  // }
+
   auto data() { return _data; }
   auto data_ptr() { return _data.get(); }
   auto columns() { return _columns; }
@@ -91,6 +124,24 @@ public:
     _q.wait();
   }
 
+  // explicit Vector(Vector&& other) : _q(other._q), _N(other._N), _ptr((other._ptr)) {
+  //   other._ptr = nullptr;
+  //   other._N = 0;
+
+    
+  // }
+
+  // Vector& operator=(Vector &&other) {
+
+  //   this->_q = other._q;
+  //   this->_N = other._N;
+  //   this->_ptr = other._ptr;
+  //   other._ptr = nullptr;
+  //   other._N = 0;
+
+  //   return *this;
+  // }
+ 
   asycl::event init_empty(std::size_t size = 0) {
 
     if (size != 0 && _N == 0)
@@ -136,25 +187,33 @@ public:
     _q.wait();
   }
 
+  // Scalar(Scalar && other) : _q(other._q), value(other.value) {
+  //   other.value = nullptr;
+    
+  // }
+
+  // Scalar(const Scalar& other) = default;
+
+  // Scalar& operator=(Scalar&& other) {
+  //   this->_q = other._q;
+  //   this->value = other.value;
+  //   other.value = nullptr;
+  // }
+
   auto init(DT value) {
 
-    this->value = std::shared_ptr<DT>(asycl::malloc_device<DT>(1, _q), Asycl_deleter<DT>(_q));
+    this->value = std::shared_ptr<DT>(asycl::malloc_device<DT>(1, _q),
+                                      Asycl_deleter<DT>(_q));
 
     _q.copy(&value, this->value.get(), 1);
   }
 
   auto ptr() { return value.get(); }
 
-  operator DT*() const { // Maybe make this constexpr
+  operator DT *() const { // Maybe make this constexpr
 
     return value.get();
   }
-
-  // DT* operator *() {
-
-  //   return value.get();
-
-  // }
 
 private:
   asycl::queue _q;

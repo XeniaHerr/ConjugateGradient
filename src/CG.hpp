@@ -1,6 +1,15 @@
 #ifndef CG_HPP
 #define CG_HPP
 
+/**
+ * @file CG.hpp
+ *
+ * Main Class CG
+ *
+ * This file conatins the Class CG, which contains the main algorithm. To use
+ * this class the user has to provide a sycl::queue object and both parts of the
+ * LGS as std::vectors*/
+
 // IMPORTANT: Only include sycl.hpp header. All other headers might lead to
 // compilation errors
 #include <AdaptiveCpp/sycl/sycl.hpp>
@@ -8,30 +17,38 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
+#include <hipSYCL/sycl/exception.hpp>
 #include <iostream>
+#include <memory>
 #include <ostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "Matrix.hpp"
+#include "LinearAlgebraTypes.hpp"
 #include "VectorOperations.hpp"
 
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
-constexpr static size_t TILE = 128;
-
+/**
+ * @enum Debuglevel
+ * @brief Specify how verbose the Output is*/
 enum Debuglevel {
-  None,
-  Verbose,
+  None,    ///< No output
+  Verbose, ///< All possible outputs
 
 };
 
 template <typename DT, Debuglevel debug = Debuglevel::None> class CG {
 
 public:
+  using Scalar = Scalar<DT>;
+  using Matrix = Matrix<DT>;
+  using Vector = Vector<DT>;
   // Do not allocate Memory at the beginning
   CG(asycl::queue &queue) : _queue(queue), A(queue), x(_queue), b(_queue) {
 
@@ -42,6 +59,22 @@ public:
     // A.data = nullptr;
   }
 
+  template <typename DTT> static std::unique_ptr<CG<DTT>> createCG() {
+
+    asycl::queue q;
+
+    std::unique_ptr<CG<DTT>> cg(new CG(q));
+
+    return cg;
+  }
+  /**
+   * @brief Set Matrix of the LGS in CSR Format
+   *
+   * Must be called before @see solve or an exception will be thrown
+   *
+   * @param data std::vector of Matrix values
+   * @param columns std::vector of Column coordinates of data
+   * @param rows std::vector of beginning of new rows*/
   void setMatrix(std::vector<DT> &data, std::vector<int> &columns,
                  std::vector<int> &rows) {
     if constexpr (debug == Debuglevel::Verbose)
@@ -50,8 +83,26 @@ public:
     A.init(data, columns, rows);
   }
 
+  /**
+   * @brief Set Matrix of the LGS in CSR Format
+   *
+   * Must be called before solve or an exception will be thrown
+   *
+   * @param M Matrix stored on device. Will be moved
+   */
+  void setMatrix(Matrix &&M) { A = std::forward<Matrix>(M); }
+
+  /**
+   * @return returns the Dimension of the Matrix
+   */
   int getDimension() const { return this->A.N(); }
 
+  /**
+   * @brief set the Right hand side of the LGS
+   *
+   * Must be called before solve or an exception will be thrown
+   *
+   * @param _data std::vector of the righ hand side of the LGS*/
   void setTarget(std::vector<DT> &_data) {
 
     b.init(_data);
@@ -59,11 +110,45 @@ public:
     _queue.wait();
   }
 
+  /**
+   * @brief Set the Right hand size of the LGS
+   *
+   * Must be called before solve or an exception will be thrown
+   *
+   * @param V Vector stored on device. Will be moved
+   */
+  void setTarget(Vector &&V) { b = std::forward<Vector>(V); }
+
+  /**
+   * @brief set initial guess for x
+   *
+   * If not set, x will be the 0 vector
+   *
+   * @param _data std::vector containing the initial guess
+   */
   void setInital(std::vector<DT> &_data) {
     x.init(_data);
     _queue.wait();
   }
 
+  /**
+   * @brief Set the Initial Guess
+   *
+   * Must be called before solve or an exception will be thrown
+   *
+   * @param V Vector stored on device. Will be moved
+   */
+  void setInitial(Vector &&V) { x = std::forward<Vector>(V); }
+
+  /**
+   * @brief Solve the given LGS
+   *
+   * Perform Conjugate Gradient on with the provided Matrix and right hand side.
+   *
+   * @param improvement If provided terminate the algorithm after the
+   * improvement rate is less that the argument
+   *
+   * @throw runtime_error Matrix or Right hand side of LGS is missing*/
   void solve(DT improvement = static_cast<DT>(0)) {
 
     if constexpr (debug == Debuglevel::Verbose)
@@ -84,20 +169,21 @@ public:
 
     const auto N = A.N();
 
-    Vector<DT> helper(_queue, N);
-    Vector<DT> r(_queue, N);
-    Vector<DT> rnext(_queue, N);
-    Vector<DT> p(_queue, N);
-    Scalar<DT> rxr(_queue);
-    Scalar<DT> value2(_queue);
-    Scalar<DT> value3(_queue);
-    Scalar<DT> alpha(_queue);
-    Scalar<DT> beta(_queue);
+    Vector helper(_queue, N);
+    Vector r(_queue, N);
+    Vector rnext(_queue, N);
+    Vector p(_queue, N);
+    Scalar rxr(_queue);
+    Scalar value2(_queue);
+    Scalar value3(_queue);
+    Scalar alpha(_queue);
+    Scalar beta(_queue);
 
     // Must be available to both host and device
     bool *is_done = asycl::malloc_shared<bool>(1, _queue);
 
-    x.init_empty(N);
+    if (x.ptr() == nullptr)
+      x.init_empty(N);
     r.init_empty(N);
     rnext.init_empty(N);
     p.init_empty(N);
@@ -138,7 +224,7 @@ public:
     if constexpr (debug == Debuglevel::Verbose) {
       std::cout << "Init done" << std::endl;
     }
-    auto erxr = vecops.dot_product_optimised(r, r, rxr, 0, {initializer});
+    auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
     _queue.wait();
 
     if constexpr (debug == Debuglevel::Verbose) {
@@ -160,10 +246,10 @@ public:
 
       //  A * p
       auto evector_matrix_product =
-          vecops.spmv(A, p, helper, A.NNZ(), 0, {eclean_helper, eresetter});
+          vecops.spmv(A, p, helper, A.NNZ(), {eclean_helper, eresetter});
 
       // scalarproduct of AP with p
-      auto eapxp = vecops.dot_product_optimised(helper, p, value2, 0,
+      auto eapxp = vecops.dot_product_optimised(helper, p, value2,
                                                 {evector_matrix_product});
 
       // Alpha = rxr/ value2
@@ -175,9 +261,9 @@ public:
       });
 
       // Calculate x_k+1 and r_k+1
-      auto exnext = vecops.sapbx(x, p, alpha, x, 0, {ealpha});
+      auto exnext = vecops.sapbx(x, p, alpha, x, {ealpha});
 
-      auto ernext = vecops.sambx(rnext, helper, alpha, rnext, 0,
+      auto ernext = vecops.sambx(rnext, helper, alpha, rnext,
                                  {ealpha, evector_matrix_product});
 
       // Check size of rk
@@ -191,7 +277,7 @@ public:
       });
 
       auto ernextxrnext =
-          vecops.dot_product_optimised(rnext, rnext, value3, 0, {ernext});
+          vecops.dot_product_optimised(rnext, rnext, value3, {ernext});
 
       // Calculate beta
       auto ebeta = _queue.single_task<class BetaCalculation>(
@@ -199,7 +285,7 @@ public:
             *beta = *value3 / *rxr;
             *rxr = *value3;
           });
-      auto epnext = vecops.sapbx(rnext, p, beta, p, 0, {ebeta, ernext});
+      auto epnext = vecops.sapbx(rnext, p, beta, p, {ebeta, ernext});
 
       auto enext_step = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(ebeta);
@@ -209,7 +295,6 @@ public:
       _queue.wait();
 
       // One Algorithm iteration done
-
       if constexpr (debug == Debuglevel::Verbose) {
         if (counter % 100 == 0) {
           std::cout << "\r\033[2K";
@@ -224,19 +309,22 @@ public:
 
     this->_queue.wait();
 
-    if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "Last rxr = " << val << std::endl;
-
     this->is_solved = true;
   }
 
-  // Calculate the relative error
+  /**
+   * @brief calculate the error
+   *
+   * Performs a Matrix Vector Multiplikation with the calculated x and
+   * calculates the distance to b
+   *
+   * @return Norm of the Distance*/
   DT accuracy() {
 
     if constexpr (debug == Debuglevel::Verbose)
       std::cout << "accuracy" << std::endl;
-    Scalar<DT> normres(_queue);
-    Scalar<DT> normx(_queue);
+    Scalar normres(_queue);
+    Scalar normx(_queue);
 
     _queue
         .single_task([=]() {
@@ -293,13 +381,42 @@ public:
     return ret;
   }
 
-  void extractTo(std::vector<DT> &result) {}
+  /**
+   * @brief Copy the result into the provided Vector
+   * @param result Vector the result will be copied into. Will be resized
+   */
+  void extractTo(std::vector<DT> &result) {
+    result.resize(A.N());
+    this->_queue.copy(this->x.ptr(), result.data(), A.N()).wait();
+  }
 
+  /**
+   * @brief estimate the required Memory on the device
+   * @returns Number of bytes as std::size_t
+   */
   std::size_t memoryFootprint() const {
-    return (2 * this->A.NNZ() + (6 * this->A.N()));
+    return (2 * this->A.NNZ() + (4 * this->A.N())) * sizeof(DT) +
+           (2 * this->A.N() * sizeof(int));
   }
 
 private:
+  void executeQueue() {
+
+    try {
+      this->_queue.wait_and_throw();
+    } catch (asycl::exception &e) {
+
+      throw e;
+
+    }
+
+    catch (std::exception &e) {
+
+      std::cerr << "Caught Exception " << e.what() << std::endl;
+
+      throw e;
+    }
+  }
   void printVector(DT *data, std::string name) {
 
     std::vector<DT> vec(A.N());
@@ -315,13 +432,11 @@ private:
 
   bool is_solved = false;
 
-  size_t max_workgroup_count;
+  Matrix A;
 
-  Matrix<DT> A;
+  Vector x;
 
-  Vector<DT> x;
-
-  Vector<DT> b;
+  Vector b;
 
   size_t N;
 };

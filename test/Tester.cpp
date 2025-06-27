@@ -29,17 +29,20 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < target.size(); i++)
     target[i] = i + 1;
 
-  queue q;
+  //  queue q;
 
-  CG<DataType, CGSolver::Debuglevel::Verbose> cg(q);
+  //  CG<DataType, CGSolver::Debuglevel::Verbose> cg(q);
 
+  auto  cgp = CG<DataType, CGSolver::Debuglevel::Verbose>::createCG();
+
+ auto cg  = *cgp;
   cg.setMatrix(data, cols, rows);
 
   cg.setTarget(target);
 
   Timer t;
   t.start_measure();
-  cg.solve(1e-23);
+  cg.solve(1e-24);
   t.stop_measure();
   auto elapsed = t.get_duration();
 

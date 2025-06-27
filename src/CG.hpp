@@ -12,8 +12,9 @@
 
 // IMPORTANT: Only include sycl.hpp header. All other headers might lead to
 // compilation errors
+#include <AdaptiveCpp/sycl/handler.hpp>
+#include <AdaptiveCpp/sycl/libkernel/builtins.hpp>
 #include <AdaptiveCpp/sycl/sycl.hpp>
-#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -43,6 +44,12 @@ enum Debuglevel {
 
 };
 
+  /**
+   * @class CG
+   *
+   * @brief Set the parameters of the Algorithm and execute it.
+   *
+   * Set the Matrix, the Right hand side and the inital Value of the LGS and solve it with a given precision. Extract the Result afterwards to Host memory.*/
 template <typename DT, Debuglevel debug = Debuglevel::None> class CG {
 
 public:
@@ -54,16 +61,15 @@ public:
 
     if constexpr (debug == Debuglevel::Verbose)
       std::cout << "Constructing CG Object\n";
-    // A.columns = nullptr;
-    // A.rows = nullptr;
-    // A.data = nullptr;
   }
 
-  template <typename DTT> static std::unique_ptr<CG<DTT>> createCG() {
+  /**
+   * @brief create Dynamically Allocated CG object without having to expose the queue to the user*/
+  static  std::unique_ptr<CG> createCG() {
 
     asycl::queue q;
 
-    std::unique_ptr<CG<DTT>> cg(new CG(q));
+    std::unique_ptr<CG> cg(new CG(q));
 
     return cg;
   }
@@ -131,6 +137,14 @@ public:
     _queue.wait();
   }
 
+
+
+  void calculateExpectedStepCount(DT accuracy) {
+
+
+    
+  }
+
   /**
    * @brief Set the Initial Guess
    *
@@ -178,6 +192,8 @@ public:
     Scalar value3(_queue);
     Scalar alpha(_queue);
     Scalar beta(_queue);
+    Scalar r0(_queue);
+    Scalar acc(_queue, improvement);
 
     // Must be available to both host and device
     bool *is_done = asycl::malloc_shared<bool>(1, _queue);
@@ -227,6 +243,17 @@ public:
     auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
     _queue.wait();
 
+    auto er0 = _queue.submit([&] (asycl::handler& chg) {
+
+      chg.depends_on({erxr});
+      auto r0p = r0.ptr();
+      auto rxrp = rxr.ptr();
+      auto accp = acc.ptr();
+      chg.single_task([=](){
+	*r0p = asycl::sqrt( *rxrp) * *accp;
+      });
+    });
+
     if constexpr (debug == Debuglevel::Verbose) {
       std::cout << "Entering Loop" << std::endl;
     }
@@ -268,10 +295,11 @@ public:
 
       // Check size of rk
       auto eaccuracy = _queue.submit([&](asycl::handler &chg) {
-        chg.depends_on(ernext);
+	auto accp = r0.ptr();
+        chg.depends_on({ernext, er0});
 
         chg.single_task([=]() {
-          if (asycl::sqrt(*rxr) <= improvement)
+          if (asycl::sqrt(*rxr) <= *accp)
             *is_done = true;
         });
       });
@@ -292,7 +320,8 @@ public:
         chg.copy(rnext.ptr(), r.ptr(), N);
       });
 
-      _queue.wait();
+      this->executeQueue();
+      //      _queue.wait();
 
       // One Algorithm iteration done
       if constexpr (debug == Debuglevel::Verbose) {
@@ -310,6 +339,10 @@ public:
     this->_queue.wait();
 
     this->is_solved = true;
+
+    if constexpr( debug == Debuglevel::Verbose) {
+      std::cout << std::endl;
+    }
   }
 
   /**
@@ -322,7 +355,7 @@ public:
   DT accuracy() {
 
     if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "accuracy" << std::endl;
+      std::cout << "Calculating accuracy" << std::endl;
     Scalar normres(_queue);
     Scalar normx(_queue);
 

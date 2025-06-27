@@ -1,3 +1,10 @@
+/**
+ * @file LinearAlgebraTypes.hpp
+ *Storage Classes for Linear Algebra Objects.
+ *
+ * This class provides Classes to manage the data for Matrizies, Vectors and Scalars. They don't provide Actual mathematical operations, but are only focused with allcating and freeing memory on the device. */
+
+
 #ifndef MATRIX_HPP
 #define MATRIX_HPP
 
@@ -7,15 +14,19 @@
 #include <AdaptiveCpp/sycl/usm.hpp>
 #include <cassert>
 #include <cstddef>
-#include <iostream>
 #include <memory>
-#include <optional>
 #include <vector>
 
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
+  /**
+   * @class Asycl_deleter
+   *
+   * @brief Helper deallocator class
+   *
+   * Provide a deallocator Functor that can deallocate provided memory when called. An instance of this class is used as an argument in each shared_ptr construction to enable RAII Principles.*/
 template <class DT> struct Asycl_deleter {
   asycl::queue _q;
 
@@ -24,6 +35,12 @@ template <class DT> struct Asycl_deleter {
   void operator()(DT *_ptr) { asycl::free(_ptr, _q); }
 };
 
+  /**
+   * @class Matrix
+   *
+   * @brief Store Matrix on device
+   *
+   * Store a Matrix in CSR-Fromat on the device.*/
 template <class DT> class Matrix {
 
 public:
@@ -36,49 +53,39 @@ public:
     _queue.wait(); // TODO: Handle exceptions
   }
 
-  // Matrix(Matrix &&other)
-  //     : _queue(other._queue), _N(other._N), _NNZ(other._NNZ),
-  //       _size(other._size), _data(other._data), _columns(other._columns),
-  //       _rows(other._rows) {
-
-  //   other._data = nullptr;
-  //   other._columns = nullptr;
-  //   other._rows = nullptr;
-  //   other._N = 0;
-  //   other._NNZ = 0;
-  //   other._size= 0;
-  // }
-
-  // Matrix &operator=(Matrix &&other) {
-
-  //   this->_data = other._data;
-  //   this->_columns = other._columns;
-  //   this->_rows = other._rows;
-  //   this->_queue = other._queue;
-  //   this->_N = other._N;
-  //   this->_NNZ = other._NNZ;
-  //   this->_size = other._size;
-
-  //   other._data = nullptr;
-  //   other._columns = nullptr;
-  //   other._rows = nullptr;
-  //   other._N = 0;
-  //   other._NNZ = 0;
-  //   other._size = 0;
-
-  //   return *this;
-  // }
-
+  /**
+   * @brief get data smartpointer*/
   auto data() { return _data; }
+  /**
+   * @brief get data raw pointer*/
   auto data_ptr() { return _data.get(); }
+  /**
+   * @brief get columns smartpointer*/
   auto columns() { return _columns; }
+  /**
+   * @brief get columns raw pointer*/
   auto columns_ptr() { return _columns.get(); }
+  /**
+   * @brief get row smartpointer*/
   auto rows() { return _rows; }
+  /**
+   * @brief get row raw pointer*/
   auto rows_ptr() { return _rows.get(); }
 
+
+  /**
+   * @brief get Matrix dimension*/
   auto N() const { return _N; }
+  /**
+   * @brief get Number of Non zero Entries*/
   auto NNZ() const { return _NNZ; }
 
+  /**
+   * @brief Init a Matrix from given Vectors
+   *
+   * @param data std::vector of Matrix entries
+   * @param cols std::vector of column idizes of Entries
+   * @param rows std::vector of row offsets for cols vector*/
   auto init(std::vector<DT> &data, std::vector<int> &cols,
             std::vector<int> &rows) {
 
@@ -109,8 +116,18 @@ private:
   std::shared_ptr<DT[]> _data;
   std::shared_ptr<int[]> _columns;
   std::shared_ptr<int[]> _rows;
+
+  DT _condition;
 };
 
+  /**
+   * @class Vector
+   *
+   * @brief Store Vector on device
+   *
+   * This Vector can be initialized without a size, but doesn't provide capabillities to be resized.
+   *
+   **/
 template <class DT> class Vector {
 
 public:
@@ -124,24 +141,11 @@ public:
     _q.wait();
   }
 
-  // explicit Vector(Vector&& other) : _q(other._q), _N(other._N), _ptr((other._ptr)) {
-  //   other._ptr = nullptr;
-  //   other._N = 0;
 
-    
-  // }
-
-  // Vector& operator=(Vector &&other) {
-
-  //   this->_q = other._q;
-  //   this->_N = other._N;
-  //   this->_ptr = other._ptr;
-  //   other._ptr = nullptr;
-  //   other._N = 0;
-
-  //   return *this;
-  // }
- 
+  /**
+   * @brief Init an Vector with zeroes
+   *
+   @ @param size size of the vector*/
   asycl::event init_empty(std::size_t size = 0) {
 
     if (size != 0 && _N == 0)
@@ -155,6 +159,10 @@ public:
     return _q.fill(_ptr.get(), static_cast<DT>(0), _N);
   }
 
+  /**
+   * @brief Init an Vector from a std::vector
+   *
+   * @param data reference to std::vector to be copied from*/
   asycl::event init(std::vector<DT> &data) {
 
     _ptr = std::shared_ptr<DT[]>(asycl::malloc_device<DT>(data.size(), _q),
@@ -163,10 +171,16 @@ public:
     return _q.copy(data.data(), _ptr.get(), data.size());
   }
 
+  /**
+   * @brief get accecc to smartpointer*/
   auto data() { return _ptr; }
 
+  /**
+   * @brief get accesss to raw pointer*/
   auto ptr() { return _ptr.get(); }
 
+  /**
+   * @brief get size*/
   auto N() { return _N; }
 
 private:
@@ -176,7 +190,12 @@ private:
 
   std::shared_ptr<DT[]> _ptr;
 };
-
+  /**
+   * @class Scalar
+   *
+   * @brief Store Scalar value on Device 
+   *
+   * */
 template <class DT> class Scalar {
 
 public:
@@ -184,32 +203,30 @@ public:
 
     init(value);
 
-    _q.wait();
+
   }
-
-  // Scalar(Scalar && other) : _q(other._q), value(other.value) {
-  //   other.value = nullptr;
-    
-  // }
-
-  // Scalar(const Scalar& other) = default;
-
-  // Scalar& operator=(Scalar&& other) {
-  //   this->_q = other._q;
-  //   this->value = other.value;
-  //   other.value = nullptr;
-  // }
-
+  /**
+   *@brief set initial value
+   **/
   auto init(DT value) {
 
     this->value = std::shared_ptr<DT>(asycl::malloc_device<DT>(1, _q),
                                       Asycl_deleter<DT>(_q));
 
     _q.copy(&value, this->value.get(), 1);
+    _q.wait();
   }
 
+  /**
+   * @brief access the poiner
+   *
+   */
   auto ptr() { return value.get(); }
 
+  /**
+   * @brief cast to a raw Pointer for ergonomics
+   *
+   */
   operator DT *() const { // Maybe make this constexpr
 
     return value.get();
@@ -221,6 +238,13 @@ private:
   std::shared_ptr<DT> value;
 };
 
+
 } // namespace CGSolver
 
+
 #endif /*MATRIX_HPP*/
+
+
+
+
+

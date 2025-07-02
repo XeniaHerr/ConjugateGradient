@@ -2,8 +2,9 @@
  * @file LinearAlgebraTypes.hpp
  *Storage Classes for Linear Algebra Objects.
  *
- * This class provides Classes to manage the data for Matrizies, Vectors and Scalars. They don't provide Actual mathematical operations, but are only focused with allcating and freeing memory on the device. */
-
+ * This class provides Classes to manage the data for Matrizies, Vectors and
+ *Scalars. They don't provide Actual mathematical operations, but are only
+ *focused with allcating and freeing memory on the device. */
 
 #ifndef MATRIX_HPP
 #define MATRIX_HPP
@@ -21,12 +22,14 @@ namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
-  /**
-   * @class Asycl_deleter
-   *
-   * @brief Helper deallocator class
-   *
-   * Provide a deallocator Functor that can deallocate provided memory when called. An instance of this class is used as an argument in each shared_ptr construction to enable RAII Principles.*/
+/**
+ * @class Asycl_deleter
+ *
+ * @brief Helper deallocator class
+ *
+ * Provide a deallocator Functor that can deallocate provided memory when
+ * called. An instance of this class is used as an argument in each shared_ptr
+ * construction to enable RAII Principles.*/
 template <class DT> struct Asycl_deleter {
   asycl::queue _q;
 
@@ -35,12 +38,12 @@ template <class DT> struct Asycl_deleter {
   void operator()(DT *_ptr) { asycl::free(_ptr, _q); }
 };
 
-  /**
-   * @class Matrix
-   *
-   * @brief Store Matrix on device
-   *
-   * Store a Matrix in CSR-Fromat on the device.*/
+/**
+ * @class Matrix
+ *
+ * @brief Store Matrix on device
+ *
+ * Store a Matrix in CSR-Fromat on the device.*/
 template <class DT> class Matrix {
 
 public:
@@ -71,7 +74,6 @@ public:
   /**
    * @brief get row raw pointer*/
   auto rows_ptr() { return _rows.get(); }
-
 
   /**
    * @brief get Matrix dimension*/
@@ -116,18 +118,17 @@ private:
   std::shared_ptr<DT[]> _data;
   std::shared_ptr<int[]> _columns;
   std::shared_ptr<int[]> _rows;
-
-  DT _condition;
 };
 
-  /**
-   * @class Vector
-   *
-   * @brief Store Vector on device
-   *
-   * This Vector can be initialized without a size, but doesn't provide capabillities to be resized.
-   *
-   **/
+/**
+ * @class Vector
+ *
+ * @brief Store Vector on device
+ *
+ * This Vector can be initialized without a size, but doesn't provide
+ *capabillities to be resized.
+ *
+ **/
 template <class DT> class Vector {
 
 public:
@@ -141,11 +142,10 @@ public:
     _q.wait();
   }
 
-
   /**
    * @brief Init an Vector with zeroes
    *
-   @ @param size size of the vector*/
+   * @param size size of the vector*/
   asycl::event init_empty(std::size_t size = 0) {
 
     if (size != 0 && _N == 0)
@@ -190,21 +190,16 @@ private:
 
   std::shared_ptr<DT[]> _ptr;
 };
-  /**
-   * @class Scalar
-   *
-   * @brief Store Scalar value on Device 
-   *
-   * */
+/**
+ * @class Scalar
+ *
+ * @brief Store Scalar value on Device
+ *
+ * */
 template <class DT> class Scalar {
 
 public:
-  Scalar(asycl::queue q, DT value = static_cast<DT>(0)) : _q(q) {
-
-    init(value);
-
-
-  }
+  Scalar(asycl::queue q, DT value = static_cast<DT>(0)) : _q(q) { init(value); }
   /**
    *@brief set initial value
    **/
@@ -238,13 +233,6 @@ private:
   std::shared_ptr<DT> value;
 };
 
-
 } // namespace CGSolver
 
-
 #endif /*MATRIX_HPP*/
-
-
-
-
-

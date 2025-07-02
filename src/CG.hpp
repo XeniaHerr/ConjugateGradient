@@ -113,7 +113,8 @@ public:
 
     b.init(_data);
 
-    _queue.wait();
+    //    _queue.wait();
+    executeQueue();
   }
 
   /**
@@ -134,7 +135,8 @@ public:
    */
   void setInital(std::vector<DT> &_data) {
     x.init(_data);
-    _queue.wait();
+    // _queue.wait();
+    executeQueue();    
   }
 
 
@@ -206,7 +208,8 @@ public:
     helper.init_empty();
     *is_done = false;
 
-    _queue.wait();
+    //    _queue.wait();
+    executeQueue();
 
     if constexpr (debug == Debuglevel::Verbose) {
       std::cout << "Prepared Memory" << std::endl;
@@ -241,7 +244,8 @@ public:
       std::cout << "Init done" << std::endl;
     }
     auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
-    _queue.wait();
+    //    _queue.wait();
+    executeQueue();
 
     auto er0 = _queue.submit([&] (asycl::handler& chg) {
 
@@ -336,12 +340,14 @@ public:
     DT val;
     this->_queue.copy(rxr.ptr(), &val, 1);
 
-    this->_queue.wait();
+    //    this->_queue.wait();
+    executeQueue();
 
     this->is_solved = true;
 
     if constexpr( debug == Debuglevel::Verbose) {
       std::cout << std::endl;
+      std::cout << "Finished solving"  << std::endl;
     }
   }
 
@@ -390,14 +396,16 @@ public:
           });
     });
 
-    _queue.wait();
+    //    _queue.wait();
+    executeQueue();
 
     // return abs_error;
     DT *host_norm_res = new DT;
     DT *host_norm_x = new DT;
     _queue.copy(normres.ptr(), host_norm_res, 1);
     _queue.copy(normx.ptr(), host_norm_x, 1);
-    _queue.wait();
+    //    _queue.wait();
+    executeQueue();
 
     DT abs_error = std::abs((*host_norm_res) / *host_norm_x);
     delete host_norm_res;

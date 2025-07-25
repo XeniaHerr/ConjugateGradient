@@ -8,11 +8,7 @@
 
 #ifndef MATRIX_HPP
 #define MATRIX_HPP
-
-#include <AdaptiveCpp/sycl/handler.hpp>
-#include <AdaptiveCpp/sycl/queue.hpp>
 #include <AdaptiveCpp/sycl/sycl.hpp>
-#include <AdaptiveCpp/sycl/usm.hpp>
 #include <cassert>
 #include <cstddef>
 #include <memory>
@@ -21,6 +17,20 @@
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
+
+
+/**
+ * @enum Debuglevel
+ * @brief Specify how verbose the Output is
+ */
+enum Debuglevel {
+  None,    ///< No output
+  Verbose, ///< All possible outputs
+
+};
+
+    
+
 
 /**
  * @class Asycl_deleter
@@ -47,9 +57,9 @@ template <class DT> struct Asycl_deleter {
 template <class DT> class Matrix {
 
 public:
-  Matrix(asycl::queue q) : _queue(q), _size(0) {}
-  Matrix(asycl::queue q, const std::size_t size) : _queue(q), _size(size) {}
-  Matrix(asycl::queue q, std::vector<DT> &data, std::vector<int> &cols,
+ explicit  Matrix(asycl::queue q) : _queue(q), _size(0) {}
+ explicit  Matrix(asycl::queue q, const std::size_t size) : _queue(q), _size(size) {}
+ explicit  Matrix(asycl::queue q, std::vector<DT> &data, std::vector<int> &cols,
          std::vector<int> &rows)
       : _queue(q), _size(rows.size()), _N(rows.size() - 1), _NNZ(data.size()) {
     init(data, cols, rows);
@@ -107,6 +117,7 @@ public:
     _queue.copy(data.data(), _data.get(), _NNZ);
     _queue.copy(cols.data(), _columns.get(), _NNZ);
     _queue.copy(rows.data(), _rows.get(), _size);
+    
   }
 
 private:
@@ -133,7 +144,7 @@ template <class DT> class Vector {
 
 public:
   explicit Vector(asycl::queue q) : _q(q), _N(0) {}
-  explicit Vector(asycl::queue q, const std::size_t N) : _q(q), _N(N) {}
+  explicit Vector(asycl::queue q, const std::size_t N) : _q(q), _N(N) { init_empty(_N);}
 
   explicit Vector(asycl::queue q, std::vector<DT> &data) : _q(q) {
 
@@ -199,16 +210,16 @@ private:
 template <class DT> class Scalar {
 
 public:
-  Scalar(asycl::queue q, DT value = static_cast<DT>(0)) : _q(q) { init(value); }
+  explicit Scalar(asycl::queue q, DT value_ = static_cast<DT>(0)) : _q(q) { init(value_); }
   /**
-   *@brief set initial value
+   *@brief nset initial value
    **/
-  auto init(DT value) {
+  auto init(DT value_) {
 
     this->value = std::shared_ptr<DT>(asycl::malloc_device<DT>(1, _q),
                                       Asycl_deleter<DT>(_q));
 
-    _q.copy(&value, this->value.get(), 1);
+    _q.copy(&value_, this->value.get(), 1);
     _q.wait();
   }
 
@@ -222,9 +233,14 @@ public:
    * @brief cast to a raw Pointer for ergonomics
    *
    */
-  operator DT *() const { // Maybe make this constexpr
+  constexpr  operator DT *() const { // Maybe make this constexpr
 
-    return value.get();
+      return value.get();
+    }
+
+
+  DT* operator*()  {
+    return  value.get();
   }
 
 private:

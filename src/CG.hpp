@@ -1,6 +1,7 @@
 #ifndef CG_HPP
 #define CG_HPP
 
+//#define HIFLOW
 /**
  * @file CG.hpp
  *
@@ -10,16 +11,15 @@
  * this class the user has to provide a sycl::queue object and both parts of the
  * LGS as std::vectors*/
 
-// IMPORTANT: Only include sycl.hpp header. All other headers might lead to
-// compilation errors
-#include <AdaptiveCpp/sycl/handler.hpp>
-#include <AdaptiveCpp/sycl/libkernel/builtins.hpp>
+
+#include <AdaptiveCpp/hipSYCL/sycl/handler.hpp>
+#include <AdaptiveCpp/hipSYCL/sycl/libkernel/stream.hpp>
 #include <AdaptiveCpp/sycl/sycl.hpp>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <exception>
-#include <hipSYCL/sycl/exception.hpp>
+
 #include <iostream>
 #include <memory>
 #include <ostream>
@@ -28,55 +28,46 @@
 #include <utility>
 #include <vector>
 
-#ifdef HIFLOW
-#undef HIFLOW
-#endif
-
-//#include "hiflow3/build/src/include/linear_algebra/vector.h"
-
-//#include "hiflow3/src/linear_algebra/matrix.h"
-//#include "hiflow3/src/linear_algebra/vector.h"
-#ifdef HIFLOW
-#include "hiflow.h"
-#endif
 #include "LinearAlgebraTypes.hpp"
 #include "VectorOperations.hpp"
+
+
+#ifdef HIFLOW
+
+#include "hiflow.h"
+
+#endif
+
 
 namespace CGSolver {
 
 namespace asycl = acpp::sycl;
 
 /**
- * @enum Debuglevel
- * @brief Specify how verbose the Output is*/
-enum Debuglevel {
-  None,    ///< No output
-  Verbose, ///< All possible outputs
-
-};
-
-  /**
-   * @class CG
-   *
-   * @brief Set the parameters of the Algorithm and execute it.
-   *
-   * Set the Matrix, the Right hand side and the inital Value of the LGS and solve it with a given precision. Extract the Result afterwards to Host memory.*/
+ * @class CG
+ *
+ * @brief Set the parameters of the Algorithm and execute it.
+ *
+ * Set the Matrix, the Right hand side and the inital Value of the LGS and solve
+ * it with a given precision. Extract the Result afterwards to Host memory.*/
 template <typename DT, Debuglevel debug = Debuglevel::None> class CG {
 
 public:
   using Scalar = Scalar<DT>;
   using Matrix = Matrix<DT>;
   using Vector = Vector<DT>;
+
   // Do not allocate Memory at the beginning
   CG(asycl::queue &queue) : _queue(queue), A(queue), x(_queue), b(_queue) {
 
     if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "Constructing CG Object\n";
+      std::clog << "Constructing CG Object\n";
   }
 
   /**
-   * @brief create Dynamically Allocated CG object without having to expose the queue to the user*/
-  static  std::unique_ptr<CG> createCG() {
+   * @brief create Dynamically Allocated CG object without having to expose the
+   * queue to the user*/
+  static std::unique_ptr<CG> createCG() {
 
     asycl::queue q;
 
@@ -84,6 +75,7 @@ public:
 
     return cg;
   }
+
   /**
    * @brief Set Matrix of the LGS in CSR Format
    *
@@ -95,7 +87,7 @@ public:
   void setMatrix(std::vector<DT> &data, std::vector<int> &columns,
                  std::vector<int> &rows) {
     if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "Setting Matrix\n";
+      std::clog << "Setting Matrix\n";
 
     A.init(data, columns, rows);
   }
@@ -109,41 +101,55 @@ public:
    */
   void setMatrix(Matrix &&M) { A = std::forward<Matrix>(M); }
 
-
 #ifdef HIFLOW
-  void setMatrix(hiflow::la::Matrix<DT>& mat) {
+  void setMatrix(hiflow::la::Matrix<DT> &mat) {
 
-    //    const auto NNZ = mat.num_cols_global();
-    const auto N = mat.num_rows_global();
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << "Reading Matrix from hiflow" << std::endl;
+    }
+
+    const auto N = mat.num_cols_global(); 
 
     //    const auto m
     std::vector<DT> data;
     std::vector<int> columns;
-    std::vector<int> rows(N);
+    std::vector<int> rows;
 
-
+    rows.push_back(0);
+    int rowcount = 0;
     for (int i = 0; i < N; i++) {
+      for (int j = 0; j < N; j++) {
+        DT value;
+        mat.GetValues(&i, 1, &j, 1,
+                      &value); // swap i and j Should not make a difference at
+                               // all. The matrix is symmetrical after all.
+        if (value != static_cast<DT>(0)) {
+          data.push_back(value);
+          columns.push_back(j);
+          rowcount++;
+        }
 
-      int rowcount = 0;
-      for (int j = 0; j < N; i++) {
-	DT value;
-	mat.GetValues(&i, 1, &j, 1, &value);
-	if (value != static_cast<DT>(0)) {
-	  data.push_back(value);
-	  columns.push_back(j);
-	  rowcount++;
-
-	}
-	rows.push_back(rowcount);
-	rowcount = 0;
-	  }
+      }
+      rows.push_back(rowcount);
     }
-    rows.push_back(N);
+
+
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << "data " << data.size() << " cols " << columns.size()
+                << " rows " << rows.size() << std::endl;
+    }
 
     this->A.init(data, columns, rows);
+
+    executeQueue();
+
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << "Reading Matrix done" << std ::endl;
+    }
   }
 
-  #endif
+#endif
+
   /**
    * @return returns the Dimension of the Matrix
    */
@@ -163,19 +169,32 @@ public:
     executeQueue();
   }
 
-  #ifdef HIFLOW
-  void setTarget(hiflow::la::Vector<DT>& vector) {
+#ifdef HIFLOW
+  void setTarget(
+      hiflow::la::Vector<DT>
+          &vector) { 
 
-    std::vector<DT> data(vector.size_global());
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << "Reading target Vector from hiflow" << std::endl;
+    }
+    std::vector<DT> data(vector.size_global(), static_cast<DT>(0));
 
-    for(int i = 0; i < vector.size_global(); i++)
+    //    std::clog << "Vector global size " << vector.size_global() << " and
+    //    the std::vector " << data.size() << std::endl;
+
+    for (int i = 0; i < vector.size_global(); i++) {
       data[i] = vector.GetValue(i);
+    }
 
-    b.init( data);
+    b.init(data);
+
+
+    executeQueue(); // I forgot this queue execution. It took me 3 weeks to find
+                    // the bug. I am currently looking into a career in
+                    // woodworking.
   }
 
-  #endif
-  
+#endif
 
   /**
    * @brief Set the Right hand size of the LGS
@@ -196,30 +215,24 @@ public:
   void setInital(std::vector<DT> &_data) {
     x.init(_data);
     // _queue.wait();
-    executeQueue();    
+    executeQueue();
   }
 
-  #ifdef HIFLOW
-  void setInitial(hiflow::la::Vector<DT>& vector) {
+#ifdef HIFLOW
+  void setInitial(hiflow::la::Vector<DT> &vector) {
 
     std::vector<DT> data(vector.size_global());
 
-    for(int i = 0; i < vector.size_global(); i++)
+    for (int i = 0; i < vector.size_global(); i++)
       data[i] = vector.GetValue(i);
 
-    b.init( data);
-
-    
+    b.init(data);
+    executeQueue();
   }
 
-  #endif
+#endif
 
-
-  void calculateExpectedStepCount(DT accuracy) {
-
-
-    
-  }
+  void calculateExpectedStepCount(DT accuracy) {}
 
   /**
    * @brief Set the Initial Guess
@@ -242,10 +255,11 @@ public:
   void solve(DT improvement = static_cast<DT>(0)) {
 
     if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "Solving System\n";
+      std::clog << "Solving System\n";
 
-    VectorOperations<DT> vecops(this->_queue);
+    VectorOperations<DT, debug> vecops(this->_queue);
     vecops.setVectorSize(A.N());
+
 
     bool done = false;
 
@@ -274,19 +288,23 @@ public:
     // Must be available to both host and device
     bool *is_done = asycl::malloc_shared<bool>(1, _queue);
 
-    if (x.ptr() == nullptr)
+    if (x.ptr() == nullptr) {
+      if constexpr (debug == Debuglevel::Verbose) {
+
+        std::clog << "x init empty" << std::endl;
+      }
       x.init_empty(N);
+    }
     r.init_empty(N);
     rnext.init_empty(N);
     p.init_empty(N);
     helper.init_empty();
     *is_done = false;
 
-    //    _queue.wait();
     executeQueue();
 
     if constexpr (debug == Debuglevel::Verbose) {
-      std::cout << "Prepared Memory" << std::endl;
+      std::clog << "Prepared Memory" << std::endl;
     }
 
     int counter = 0;
@@ -314,28 +332,29 @@ public:
       });
     });
 
-    if constexpr (debug == Debuglevel::Verbose) {
-      std::cout << "Init done" << std::endl;
-    }
-    //    auto erxr = vecops.dot_product(r.ptr(), r.ptr(), rxr.ptr(), {initializer}, 0);
-    //        auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
-    auto erxr = vecops.dot_product_trivial(r, r, rxr, {initializer}, 0);
-    //    _queue.wait();
     executeQueue();
 
-    auto er0 = _queue.submit([&] (asycl::handler& chg) {
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << "Init done" << std::endl;
+    }
 
-      chg.depends_on({erxr});
+    auto erxr = vecops.dot_product_trivial(r, r, rxr, {initializer}, 0);
+
+    _queue.wait();
+
+    auto er0 = _queue.submit([&](asycl::handler &chg) {
+      chg.depends_on(erxr);
       auto r0p = r0.ptr();
       auto rxrp = rxr.ptr();
       auto accp = acc.ptr();
-      chg.single_task([=](){
-	*r0p = asycl::sqrt( *rxrp) * *accp;
-      });
+
+      chg.single_task<class Firstr0>(
+          [=]() { *r0p = asycl::sqrt(*rxr) * *accp; });
     });
+    executeQueue();
 
     if constexpr (debug == Debuglevel::Verbose) {
-      std::cout << "Entering Loop" << std::endl;
+      std::clog << "Entering Loop" << std::endl;
     }
     do {
 
@@ -355,65 +374,62 @@ public:
       auto evector_matrix_product =
           vecops.spmv(A, p, helper, A.NNZ(), {eclean_helper, eresetter});
 
-      // scalarproduct of AP with p
-      //      auto eapxp = vecops.dot_product(helper.ptr(), p.ptr(), value2.ptr(),
-      //                                                {evector_matrix_product});
-      //      auto eapxp = vecops.dot_product_optimised(helper, p, value2,
-      //			                                                      {evector_matrix_product});
-      auto eapxp = vecops.dot_product_trivial(helper, p, value2, {evector_matrix_product});
+      // Scalarproduct of p with Ap
+      auto eapxp = vecops.dot_product_trivial(
+          helper, p, value2, {evector_matrix_product, eresetter});
       // Alpha = rxr/ value2
       auto ealpha = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(erxr);
         chg.depends_on(eapxp);
+
         chg.single_task<class AlphaCalculation>(
             [=]() { *alpha = *rxr / *value2; });
       });
 
       // Calculate x_k+1 and r_k+1
-      auto exnext = vecops.sapbx(x, p, alpha, x, {ealpha});
+      auto exnext = vecops.sapbx(x, p, alpha.ptr(), x, {ealpha});
 
-      auto ernext = vecops.sambx(rnext, helper, alpha, rnext,
+      auto ernext = vecops.sambx(rnext, helper, alpha.ptr(), rnext,
                                  {ealpha, evector_matrix_product});
 
       // Check size of rk
       auto eaccuracy = _queue.submit([&](asycl::handler &chg) {
-	auto accp = acc.ptr();
+        auto accp = acc.ptr();
         chg.depends_on({ernext, er0});
 
         chg.single_task([=]() {
-          if (asycl::sqrt(*rxr) <= *accp)
+          if (std::isnan(*rxr) || asycl::sqrt(*rxr) <= *accp)
             *is_done = true;
         });
       });
 
       auto ernextxrnext =
-	//	vecops.dot_product_optimised(rnext, rnext, value3.ptr(), {ernext});
-	vecops.dot_product_trivial(rnext, rnext, value3, {ernext});
-      //      auto ernextxrnext =
-      //vecops.dot_product(rnext.ptr(), rnext.ptr(), value3.ptr(), {ernext});
-
+          vecops.dot_product_trivial(rnext, rnext, value3, {ernext});
       // Calculate beta
-      auto ebeta = _queue.single_task<class BetaCalculation>(
-          {ernextxrnext, erxr}, [=]() {
-            *beta = *value3 / *rxr;
-            *rxr = *value3;
-          });
-      auto epnext = vecops.sapbx(rnext, p, beta, p, {ebeta, ernext});
+
+      auto ebeta = _queue.submit([&](asycl::handler &chg) {
+        chg.depends_on({ernextxrnext, erxr});
+
+        chg.single_task<class BetaCalculation>([=]() {
+          *beta = *value3 / *rxr;
+          *rxr = *value3;
+        });
+      });
+      auto epnext = vecops.sapbx(rnext, p, beta.ptr(), p, {ebeta, ernext});
 
       auto enext_step = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(ebeta);
         chg.copy(rnext.ptr(), r.ptr(), N);
       });
 
-      this->executeQueue();
-      //      _queue.wait();
+      executeQueue();
 
       // One Algorithm iteration done
       if constexpr (debug == Debuglevel::Verbose) {
         if (counter % 100 == 0) {
-          std::cout << "\r\033[2K";
-          std::cout << ((static_cast<double>(counter) / A.N()) * 100) << "%";
-          std::flush(std::cout);
+          std::clog << "\r\033[2K";
+          std::clog << ((static_cast<double>(counter) / A.N()) * 100) << "%";
+          std::flush(std::clog);
         }
       }
 
@@ -421,14 +437,19 @@ public:
     DT val;
     this->_queue.copy(rxr.ptr(), &val, 1);
 
-    //    this->_queue.wait();
     executeQueue();
 
     this->is_solved = true;
 
-    if constexpr( debug == Debuglevel::Verbose) {
-      std::cout << std::endl;
-      std::cout << "Finished solving"  << std::endl;
+    if (is_done == nullptr) {
+      std::clog << "Something went terribly wrong" << std::endl;
+    } else {
+      asycl::free(is_done, this->_queue);
+    }
+
+    if constexpr (debug == Debuglevel::Verbose) {
+      std::clog << std::endl;
+      std::clog << "Finished solving" << std::endl;
     }
   }
 
@@ -442,7 +463,7 @@ public:
   DT accuracy() {
 
     if constexpr (debug == Debuglevel::Verbose)
-      std::cout << "Calculating accuracy" << std::endl;
+      std::clog << "Calculating accuracy" << std::endl;
     Scalar normres(_queue);
     Scalar normx(_queue);
 
@@ -477,15 +498,13 @@ public:
           });
     });
 
-    //    _queue.wait();
     executeQueue();
 
-    // return abs_error;
     DT *host_norm_res = new DT;
     DT *host_norm_x = new DT;
     _queue.copy(normres.ptr(), host_norm_res, 1);
     _queue.copy(normx.ptr(), host_norm_x, 1);
-    //    _queue.wait();
+
     executeQueue();
 
     DT abs_error = std::abs((*host_norm_res) / *host_norm_x);
@@ -512,22 +531,23 @@ public:
     this->_queue.copy(this->x.ptr(), result.data(), A.N()).wait();
   }
 
-  #ifdef HIFLOW
+#ifdef HIFLOW
+
   /**
    * @brief Copy the result to a provided hiflow Vector
    *
-   * I don't know if this can be done better (probably)*/
-  void extractTo(hiflow::la::Vector<DT>& vec) {
+   * I don't know if this can be done better (probably)
+   */
+  void extractTo(hiflow::la::Vector<DT> &vec) {
 
-    assert(vec.size_global() == x.N() );
-    auto values = extract();
-    for(int i = 0; i < x.N(); i++) {
-      vec.SetValue(i, values[i]);
+    //    printVector(x.ptr(), "Result as compute");
+    assert(vec.size_global() == x.N());
+    std::vector<DT> values = extract();
+    for (int i = 0; i < values.size(); i++) {
+      vec.SetValue(i, values[i]); // THis caused Segmentation fault(11)
     }
-
   }
-  #endif
-
+#endif
   /**
    * @brief estimate the required Memory on the device
    * @returns Number of bytes as std::size_t
@@ -539,10 +559,11 @@ public:
 
 private:
   void executeQueue() {
-
     try {
       this->_queue.wait_and_throw();
     } catch (asycl::exception &e) {
+
+      std::cerr << "Caught Sycl Exception " << e.what() << std::endl;
 
       throw e;
 
@@ -560,10 +581,10 @@ private:
     std::vector<DT> vec(A.N());
     _queue.copy(data, vec.data(), A.N()).wait();
 
-    std::cout << name << " = [";
+    std::clog << name << " = [";
     for (auto &a : vec)
-      std::cout << a << " ";
-    std::cout << "]\n";
+      std::clog << a << " ";
+    std::clog << "]\n";
   }
 
   asycl::queue _queue;

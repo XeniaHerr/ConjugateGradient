@@ -8,14 +8,17 @@
  * the needed Linear Algebra Operations
  */
 
+// #include "LinearAlgebraTypes.hpp"
+// #include <AdaptiveCpp/hipSYCL/sycl/event.hpp>
+// #include <AdaptiveCpp/hipSYCL/sycl/handler.hpp>
+// #include <AdaptiveCpp/hipSYCL/sycl/libkernel/functional.hpp>
+// #include <AdaptiveCpp/hipSYCL/sycl/usm.hpp>
 #include "LinearAlgebraTypes.hpp"
-#include <AdaptiveCpp/hipSYCL/sycl/event.hpp>
-#include <AdaptiveCpp/hipSYCL/sycl/handler.hpp>
-#include <AdaptiveCpp/hipSYCL/sycl/libkernel/functional.hpp>
-#include <AdaptiveCpp/hipSYCL/sycl/usm.hpp>
+#include <AdaptiveCpp/hipSYCL/sycl/libkernel/stream.hpp>
 #include <AdaptiveCpp/sycl/sycl.hpp>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <iostream>
 #include <memory>
@@ -33,7 +36,8 @@ namespace asycl = acpp::sycl;
  * All methods that implement Kernels return a sycl event. This event can be
  * used in Future Kernels to create a Dependencie Hierarchy. This class doesn't
  * call queue.wait() on its own.*/
-template <class DT> class VectorOperations {
+template <class DT, Debuglevel debug = Debuglevel::None>
+class VectorOperations {
 
 private:
   /**
@@ -94,7 +98,7 @@ public:
   void setVectorSize(size_t size) { this->vector_size = size; }
 
   /**
-   * @brief Calculate the Standart Scalarproduct of 2 Vectors using Parallel
+   * @brief Calculate the Standart product of 2 Vectors using Parallel
    * Tree Reductions.
    *
    * @param Left Left Vector
@@ -207,7 +211,7 @@ public:
    @deprecated Use the optimised version*/
   asycl::event dot_product(DT *left, DT *right, DT *result,
                            std::vector<asycl::event> dependencies = {},
-                            size_t vec_size = 0) {
+                           size_t vec_size = 0) {
 
     vector_size = vec_size == 0 ? vector_size : vec_size;
 
@@ -280,27 +284,56 @@ public:
     return final_reduction;
   }
 
-  asycl::event
-  dot_product_trivial(Vector<DT> &left, Vector<DT> &right, Scalar<DT> &result,
-                      std::vector<asycl::event> dependencies = {}, std::size_t size = 0) {
+  asycl::event dot_product_trivial(Vector<DT> &left, Vector<DT> &right,
+                                   Scalar<DT> &result,
+                                   std::vector<asycl::event> dependencies = {},
+                                   std::size_t size = 0) {
 
-    auto event =    this->_queue.submit([&](asycl::handler &chg) {
-       chg.depends_on(dependencies);
+    auto event = this->_queue.submit([&](asycl::handler &chg) {
+      //      chg.depends_on(dependencies);
 
+      for (auto &dep : dependencies)
+        chg.depends_on(dep);
       auto x = left.ptr();
-
       auto y = right.ptr();
 
       auto reducer = asycl::reduction(result.ptr(), asycl::plus<>());
 
+      asycl::stream str(8192, 1024, chg);
       chg.parallel_for<class DotproductTrivial>(
-          this->vector_size, reducer, [=](asycl::item<1> id, auto &SumRed) {
-            SumRed += x[id] * y[id];
-          });
+          this->vector_size, reducer,
+          [=](asycl::item<1> id, auto &SumRed) { SumRed += x[id] * y[id]; });
     });
 
     return event;
   }
+
+  asycl::event norm(Vector<DT> &vector, Scalar<DT> &result,
+                    std::vector<asycl::event> dependencies = {},
+                    std::size_t size = 0) {
+
+    auto event = this->_queue.submit([&](asycl::handler &chg) {
+      //      chg.depends_on(dependencies);
+
+      for (auto &dep : dependencies)
+        chg.depends_on(dep);
+
+      auto x = vector.ptr();
+
+      auto reducer = asycl::reduction(result.ptr(), asycl::plus<>());
+
+      chg.parallel_for<class Norm>(
+          this->vector_size, reducer,
+          [=](asycl::item<1> id, auto &SumRed) { SumRed += x[id] * x[id]; });
+    });
+
+    return event;
+  }
+
+  // THe above method should compute the dot product of 2 Vectors. The vectors
+  // are wrappers around Sycl memory pointers. For some reason the result is
+  // sometimes inf. Directly before calling this method is is 0 and both vectors
+  // don't contain any infs or nans. How does this happen?
 
   /**
    * @brief Add two scaled Vectors
@@ -447,7 +480,9 @@ private:
 
     const auto max_wg_size =
         device.get_info<asycl::info::device::max_work_group_size>();
-    std::cout << "work group size is " << max_wg_size << std::endl;
+
+    if constexpr (debug == Debuglevel::Verbose)
+      std::clog << "work group size is " << max_wg_size << std::endl;
     return std::min(static_cast<size_t>(128), max_wg_size);
   }
 };

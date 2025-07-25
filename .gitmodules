@@ -1,0 +1,3 @@
+[submodule "src/hiflow3"]
+	path = src/hiflow3
+	url = https://emcl-gitlab.iwr.uni-heidelberg.de/hiflow3.org/hiflow3.git

@@ -83,7 +83,6 @@ read_real_coordinate_matrix(std::ifstream &f) {
     else
       return false;
   };
-
   std::sort(coordinates.begin(), coordinates.end(), sorter);
 
   int helper = 0;
@@ -170,3 +169,13 @@ read_file(std::string filename) {
 
   return result;
 }
+
+
+
+
+
+
+
+
+
+

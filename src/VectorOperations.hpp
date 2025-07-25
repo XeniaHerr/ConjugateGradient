@@ -9,6 +9,9 @@
  */
 
 #include "LinearAlgebraTypes.hpp"
+#include <AdaptiveCpp/hipSYCL/sycl/event.hpp>
+#include <AdaptiveCpp/hipSYCL/sycl/handler.hpp>
+#include <AdaptiveCpp/hipSYCL/sycl/libkernel/functional.hpp>
 #include <AdaptiveCpp/hipSYCL/sycl/usm.hpp>
 #include <AdaptiveCpp/sycl/sycl.hpp>
 #include <algorithm>
@@ -204,7 +207,7 @@ public:
    @deprecated Use the optimised version*/
   asycl::event dot_product(DT *left, DT *right, DT *result,
                            std::vector<asycl::event> dependencies = {},
-                           size_t vec_size = 0) {
+                            size_t vec_size = 0) {
 
     vector_size = vec_size == 0 ? vector_size : vec_size;
 
@@ -277,7 +280,27 @@ public:
     return final_reduction;
   }
 
+  asycl::event
+  dot_product_trivial(Vector<DT> &left, Vector<DT> &right, Scalar<DT> &result,
+                      std::vector<asycl::event> dependencies = {}, std::size_t size = 0) {
 
+    auto event =    this->_queue.submit([&](asycl::handler &chg) {
+       chg.depends_on(dependencies);
+
+      auto x = left.ptr();
+
+      auto y = right.ptr();
+
+      auto reducer = asycl::reduction(result.ptr(), asycl::plus<>());
+
+      chg.parallel_for<class DotproductTrivial>(
+          this->vector_size, reducer, [=](asycl::item<1> id, auto &SumRed) {
+            SumRed += x[id] * y[id];
+          });
+    });
+
+    return event;
+  }
 
   /**
    * @brief Add two scaled Vectors
@@ -344,8 +367,8 @@ public:
   /**
    * @brief Add a scaled vector to another vector
    *
-   * @param X Vector 
-   * @param Y Vector 
+   * @param X Vector
+   * @param Y Vector
    * @param b scalar for Y
    * @param Result resulting vector
    * @param events dependencies

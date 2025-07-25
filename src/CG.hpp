@@ -28,6 +28,17 @@
 #include <utility>
 #include <vector>
 
+#ifdef HIFLOW
+#undef HIFLOW
+#endif
+
+//#include "hiflow3/build/src/include/linear_algebra/vector.h"
+
+//#include "hiflow3/src/linear_algebra/matrix.h"
+//#include "hiflow3/src/linear_algebra/vector.h"
+#ifdef HIFLOW
+#include "hiflow.h"
+#endif
 #include "LinearAlgebraTypes.hpp"
 #include "VectorOperations.hpp"
 
@@ -98,6 +109,41 @@ public:
    */
   void setMatrix(Matrix &&M) { A = std::forward<Matrix>(M); }
 
+
+#ifdef HIFLOW
+  void setMatrix(hiflow::la::Matrix<DT>& mat) {
+
+    //    const auto NNZ = mat.num_cols_global();
+    const auto N = mat.num_rows_global();
+
+    //    const auto m
+    std::vector<DT> data;
+    std::vector<int> columns;
+    std::vector<int> rows(N);
+
+
+    for (int i = 0; i < N; i++) {
+
+      int rowcount = 0;
+      for (int j = 0; j < N; i++) {
+	DT value;
+	mat.GetValues(&i, 1, &j, 1, &value);
+	if (value != static_cast<DT>(0)) {
+	  data.push_back(value);
+	  columns.push_back(j);
+	  rowcount++;
+
+	}
+	rows.push_back(rowcount);
+	rowcount = 0;
+	  }
+    }
+    rows.push_back(N);
+
+    this->A.init(data, columns, rows);
+  }
+
+  #endif
   /**
    * @return returns the Dimension of the Matrix
    */
@@ -116,6 +162,20 @@ public:
     //    _queue.wait();
     executeQueue();
   }
+
+  #ifdef HIFLOW
+  void setTarget(hiflow::la::Vector<DT>& vector) {
+
+    std::vector<DT> data(vector.size_global());
+
+    for(int i = 0; i < vector.size_global(); i++)
+      data[i] = vector.GetValue(i);
+
+    b.init( data);
+  }
+
+  #endif
+  
 
   /**
    * @brief Set the Right hand size of the LGS
@@ -139,6 +199,20 @@ public:
     executeQueue();    
   }
 
+  #ifdef HIFLOW
+  void setInitial(hiflow::la::Vector<DT>& vector) {
+
+    std::vector<DT> data(vector.size_global());
+
+    for(int i = 0; i < vector.size_global(); i++)
+      data[i] = vector.GetValue(i);
+
+    b.init( data);
+
+    
+  }
+
+  #endif
 
 
   void calculateExpectedStepCount(DT accuracy) {
@@ -243,7 +317,9 @@ public:
     if constexpr (debug == Debuglevel::Verbose) {
       std::cout << "Init done" << std::endl;
     }
-    auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
+    //    auto erxr = vecops.dot_product(r.ptr(), r.ptr(), rxr.ptr(), {initializer}, 0);
+    //        auto erxr = vecops.dot_product_optimised(r, r, rxr, {initializer}, 0);
+    auto erxr = vecops.dot_product_trivial(r, r, rxr, {initializer}, 0);
     //    _queue.wait();
     executeQueue();
 
@@ -280,9 +356,11 @@ public:
           vecops.spmv(A, p, helper, A.NNZ(), {eclean_helper, eresetter});
 
       // scalarproduct of AP with p
-      auto eapxp = vecops.dot_product_optimised(helper, p, value2,
-                                                {evector_matrix_product});
-
+      //      auto eapxp = vecops.dot_product(helper.ptr(), p.ptr(), value2.ptr(),
+      //                                                {evector_matrix_product});
+      //      auto eapxp = vecops.dot_product_optimised(helper, p, value2,
+      //			                                                      {evector_matrix_product});
+      auto eapxp = vecops.dot_product_trivial(helper, p, value2, {evector_matrix_product});
       // Alpha = rxr/ value2
       auto ealpha = _queue.submit([&](asycl::handler &chg) {
         chg.depends_on(erxr);
@@ -299,7 +377,7 @@ public:
 
       // Check size of rk
       auto eaccuracy = _queue.submit([&](asycl::handler &chg) {
-	auto accp = r0.ptr();
+	auto accp = acc.ptr();
         chg.depends_on({ernext, er0});
 
         chg.single_task([=]() {
@@ -309,7 +387,10 @@ public:
       });
 
       auto ernextxrnext =
-          vecops.dot_product_optimised(rnext, rnext, value3, {ernext});
+	//	vecops.dot_product_optimised(rnext, rnext, value3.ptr(), {ernext});
+	vecops.dot_product_trivial(rnext, rnext, value3, {ernext});
+      //      auto ernextxrnext =
+      //vecops.dot_product(rnext.ptr(), rnext.ptr(), value3.ptr(), {ernext});
 
       // Calculate beta
       auto ebeta = _queue.single_task<class BetaCalculation>(
@@ -430,6 +511,22 @@ public:
     result.resize(A.N());
     this->_queue.copy(this->x.ptr(), result.data(), A.N()).wait();
   }
+
+  #ifdef HIFLOW
+  /**
+   * @brief Copy the result to a provided hiflow Vector
+   *
+   * I don't know if this can be done better (probably)*/
+  void extractTo(hiflow::la::Vector<DT>& vec) {
+
+    assert(vec.size_global() == x.N() );
+    auto values = extract();
+    for(int i = 0; i < x.N(); i++) {
+      vec.SetValue(i, values[i]);
+    }
+
+  }
+  #endif
 
   /**
    * @brief estimate the required Memory on the device

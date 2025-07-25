@@ -13,7 +13,19 @@
     buildInputs = with pkgs; [
       adaptivecppWithCuda
       cmake
+      bear
       doxygen
+      boost
+      openmpi
+      #tinyxml2
+      tinyxml-2
+        
+            paraview
+            valgrind
+
+
+      pkg-config
+
     ];
         };
 
